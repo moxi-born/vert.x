@@ -10,11 +10,21 @@
  */
 package io.vertx.core.spi.tracing;
 
+import org.junit.Assert;
+import org.junit.Test;
+
 import io.vertx.core.http.Http2TestBase;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.HttpVersion;
+import io.vertx.core.tracing.TracingPolicy;
+import io.vertx.test.faketracer.FakeTracer;
 
 public class Http2TracerTest extends HttpTracerTestBase {
+
+  private static final String SPAN_KIND_SERVER = "server";
+  private static final String SPAN_KIND_CLIENT = "client";
+  private static final String SPAN_KIND_KEY = "span_kind";
 
   @Override
   protected HttpServerOptions createBaseServerOptions() {
@@ -24,5 +34,48 @@ public class Http2TracerTest extends HttpTracerTestBase {
   @Override
   protected HttpClientOptions createBaseClientOptions() {
     return Http2TestBase.createHttp2ClientOptions();
+  }
+
+  @Test
+  public void testTracingWorksAfterUpgrading() throws Exception {
+    client.close();
+    FakeTracer fakeTracer = new FakeTracer();
+    setTracer(fakeTracer);
+
+    client = vertx.createHttpClient(new HttpClientOptions()
+      // setting policy always, if not the span with kind client is not sent
+      .setTracingPolicy(TracingPolicy.ALWAYS)
+      .setProtocolVersion(HttpVersion.HTTP_2));
+    // Server always return "Ok"
+    server = vertx.createHttpServer();
+    server.requestHandler(req -> {
+      req.response().end("Ok");
+    });
+    startServer(testAddress);
+    waitFor(2);
+    // request <1>
+    client.request(requestOptions).onSuccess(request -> {
+      request.send().onSuccess(response -> {
+        complete();
+      });
+    });
+    // request <2>
+    client.request(requestOptions).onSuccess(request -> {
+      request.send().onSuccess(response -> {
+        complete();
+      });
+    });
+    // There should be 4 spans: 2 of kind server and 2 of kind client.
+    // This test is failing because the first request <1> is missing one span that is produced only when the connection is closed.
+    // The next request <2> is working correctly: the two spans are properly generated.
+    waitUntil(() -> fakeTracer.getFinishedSpans().size() == 4);
+    Assert.assertTrue("Span with kind server was not found!",
+      fakeTracer.getFinishedSpans().stream().anyMatch(s -> SPAN_KIND_SERVER.equals(s.getTags().get(SPAN_KIND_KEY))));
+    Assert.assertTrue("Span with kind client was not found!",
+      fakeTracer.getFinishedSpans().stream().anyMatch(s -> SPAN_KIND_CLIENT.equals(s.getTags().get(SPAN_KIND_KEY))));
+    fakeTracer.getFinishedSpans().forEach(s -> {
+      Assert.assertNull(s.failure());
+    });
+    await();
   }
 }

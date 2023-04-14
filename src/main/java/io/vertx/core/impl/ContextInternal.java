@@ -12,7 +12,6 @@
 package io.vertx.core.impl;
 
 import io.netty.channel.EventLoop;
-import io.netty.util.concurrent.FastThreadLocalThread;
 import io.vertx.core.*;
 import io.vertx.core.impl.future.FailedFuture;
 import io.vertx.core.impl.future.PromiseImpl;
@@ -23,8 +22,6 @@ import io.vertx.core.spi.tracing.VertxTracer;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-
-import static io.vertx.core.impl.ContextBase.setResultHandler;
 
 /**
  * This interface provides an api for vert.x core internal use only
@@ -80,15 +77,15 @@ public interface ContextInternal extends Context {
    * @return a {@link Promise} associated with this context or the {@code handler}
    *         if that handler is already an instance of {@code PromiseInternal}
    */
-  default <T> PromiseInternal<T> promise(Handler<AsyncResult<T>> handler) {
-    if (handler instanceof PromiseInternal) {
-      PromiseInternal<T> promise = (PromiseInternal<T>) handler;
+  default <T> PromiseInternal<T> promise(Promise<T> p) {
+    if (p instanceof PromiseInternal) {
+      PromiseInternal<T> promise = (PromiseInternal<T>) p;
       if (promise.context() != null) {
         return promise;
       }
     }
     PromiseInternal<T> promise = promise();
-    promise.future().onComplete(handler);
+    promise.future().onComplete(p);
     return promise;
   }
 
@@ -121,15 +118,6 @@ public interface ContextInternal extends Context {
   }
 
   /**
-   * Like {@link #executeBlocking(Handler, boolean, Handler)} but uses the {@code queue} to order the tasks instead
-   * of the internal queue of this context.
-   */
-  default <T> void executeBlocking(Handler<Promise<T>> blockingCodeHandler, TaskQueue queue, Handler<AsyncResult<T>> resultHandler) {
-    Future<T> fut = executeBlocking(blockingCodeHandler, queue);
-    setResultHandler(this, fut, resultHandler);
-  }
-
-  /**
    * Like {@link #executeBlocking(Handler, boolean)} but uses the {@code queue} to order the tasks instead
    * of the internal queue of this context.
    */
@@ -138,29 +126,10 @@ public interface ContextInternal extends Context {
   /**
    * Execute an internal task on the internal blocking ordered executor.
    */
-  default <T> void executeBlockingInternal(Handler<Promise<T>> action, Handler<AsyncResult<T>> resultHandler) {
-    Future<T> fut = executeBlockingInternal(action);
-    setResultHandler(this, fut, resultHandler);
-  }
-
-  default <T> void executeBlockingInternal(Handler<Promise<T>> action, boolean ordered, Handler<AsyncResult<T>> resultHandler) {
-    Future<T> fut = executeBlockingInternal(action, ordered);
-    setResultHandler(this, fut, resultHandler);
-  }
-
-  @Override
-  default <T> void executeBlocking(Handler<Promise<T>> blockingCodeHandler, boolean ordered, Handler<AsyncResult<T>> resultHandler) {
-    Future<T> fut = executeBlocking(blockingCodeHandler, ordered);
-    setResultHandler(this, fut, resultHandler);
-  }
-
-  /**
-   * Like {@link #executeBlockingInternal(Handler, Handler)} but returns a {@code Future} of the asynchronous result
-   */
   <T> Future<T> executeBlockingInternal(Handler<Promise<T>> action);
 
   /**
-   * Like {@link #executeBlockingInternal(Handler, boolean, Handler)} but returns a {@code Future} of the asynchronous result
+   * Execute an internal task on the internal blocking ordered executor.
    */
   <T> Future<T> executeBlockingInternal(Handler<Promise<T>> action, boolean ordered);
 

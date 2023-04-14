@@ -5,12 +5,10 @@ import io.vertx.codegen.annotations.CacheReturn;
 import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
-import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.Cookie;
 import io.vertx.core.http.HttpConnection;
@@ -219,28 +217,13 @@ public class HttpServerRequestWrapper extends HttpServerRequestInternal {
   }
 
   @Override
-  public HttpServerRequest body(Handler<AsyncResult<Buffer>> handler) {
-    return delegate.body(handler);
-  }
-
-  @Override
   public Future<Buffer> body() {
     return delegate.body();
   }
 
   @Override
-  public void end(Handler<AsyncResult<Void>> handler) {
-    delegate.end(handler);
-  }
-
-  @Override
   public Future<Void> end() {
     return delegate.end();
-  }
-
-  @Override
-  public void toNetSocket(Handler<AsyncResult<NetSocket>> handler) {
-    delegate.toNetSocket(handler);
   }
 
   @Override
@@ -281,11 +264,6 @@ public class HttpServerRequestWrapper extends HttpServerRequestInternal {
   @CacheReturn
   public int streamId() {
     return delegate.streamId();
-  }
-
-  @Override
-  public void toWebSocket(Handler<AsyncResult<ServerWebSocket>> handler) {
-    delegate.toWebSocket(handler);
   }
 
   @Override
@@ -384,8 +362,4 @@ public class HttpServerRequestWrapper extends HttpServerRequestInternal {
     return delegate.pipeTo(dst);
   }
 
-  @Override
-  public void pipeTo(WriteStream<Buffer> dst, Handler<AsyncResult<Void>> handler) {
-    delegate.pipeTo(dst, handler);
-  }
 }

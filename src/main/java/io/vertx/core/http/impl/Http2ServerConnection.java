@@ -23,7 +23,6 @@ import io.netty.handler.codec.http2.Http2Settings;
 import io.netty.handler.codec.http2.Http2Stream;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.FutureListener;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
@@ -52,6 +51,7 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
   Handler<HttpServerRequest> requestHandler;
   private int concurrentStreams;
   private final ArrayDeque<Push> pendingPushes = new ArrayDeque<>(8);
+  private VertxHttp2Stream upgraded;
 
   Http2ServerConnection(
     EventLoopContext context,
@@ -134,15 +134,23 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
     return null;
   }
 
-  private Http2ServerStream createRequest(int streamId, Http2Headers headers, boolean streamEnded) {
+  private Http2ServerStream createStream(int streamId, Http2Headers headers, boolean streamEnded) {
     Http2Stream stream = handler.connection().stream(streamId);
     String contentEncoding = options.isCompressionSupported() ? determineContentEncoding(headers) : null;
-    Http2ServerStream vertxStream = new Http2ServerStream(this, streamContextSupplier.get(), headers, serverOrigin);
-    Http2ServerRequest request = new Http2ServerRequest(vertxStream, serverOrigin, options.getTracingPolicy(), headers, contentEncoding, streamEnded);
+    Http2ServerStream vertxStream = new Http2ServerStream(this, streamContextSupplier.get(), headers, serverOrigin, options.getTracingPolicy(), streamEnded);
+    Http2ServerRequest request = new Http2ServerRequest(vertxStream, serverOrigin, headers, contentEncoding);
     vertxStream.request = request;
     vertxStream.isConnect = request.method() == HttpMethod.CONNECT;
     vertxStream.init(stream);
     return vertxStream;
+  }
+
+  VertxHttp2Stream<?> stream(int id) {
+    VertxHttp2Stream<?> stream = super.stream(id);
+    if (stream == null && id == 1 && handler.upgraded) {
+      return upgraded;
+    }
+    return stream;
   }
 
   @Override
@@ -153,7 +161,12 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
         handler.writeReset(streamId, Http2Error.PROTOCOL_ERROR.code());
         return;
       }
-      stream = createRequest(streamId, headers, endOfStream);
+      if (streamId == 1 && handler.upgraded) {
+        stream = createStream(streamId, headers, true);
+        upgraded = stream;
+      } else {
+        stream = createStream(streamId, headers, endOfStream);
+      }
       stream.onHeaders(headers, streamPriority);
     } else {
       // Http server request trailer - not implemented yet (in api)
@@ -190,7 +203,7 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
           int promisedStreamId = future.getNow();
           String contentEncoding = determineContentEncoding(headers_);
           Http2Stream promisedStream = handler.connection().stream(promisedStreamId);
-          Http2ServerStream vertxStream = new Http2ServerStream(this, context, method, path);
+          Http2ServerStream vertxStream = new Http2ServerStream(this, context, method, path, options.getTracingPolicy(), true);
           Push push = new Push(vertxStream, contentEncoding, promise);
           vertxStream.request = push;
           push.stream.priority(streamPriority);
@@ -209,9 +222,9 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
     });
   }
 
-  protected void updateSettings(Http2Settings settingsUpdate, Handler<AsyncResult<Void>> completionHandler) {
+  protected io.vertx.core.Future<Void> updateSettings(Http2Settings settingsUpdate) {
     settingsUpdate.remove(Http2CodecUtil.SETTINGS_ENABLE_PUSH);
-    super.updateSettings(settingsUpdate, completionHandler);
+    return super.updateSettings(settingsUpdate);
   }
 
   private class Push implements Http2ServerStreamHandler {
@@ -255,7 +268,7 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
     }
 
     @Override
-    public  void handleClose(HttpClosedException ex) {
+    public  void handleClose() {
       if (pendingPushes.remove(this)) {
         promise.fail("Push reset by client");
       } else {
@@ -266,7 +279,7 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
           concurrentStreams++;
           push.complete();
         }
-        response.handleClose(ex);
+        response.handleClose();
       }
     }
 

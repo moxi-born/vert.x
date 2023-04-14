@@ -227,11 +227,6 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   Future<Void> write(String chunk);
 
   /**
-   * Same as {@link #write(String)} but with an {@code handler} called when the operation completes
-   */
-  void write(String chunk, Handler<AsyncResult<Void>> handler);
-
-  /**
    * Write a {@link String} to the request body, encoded using the encoding {@code enc}.
    *
    * @param chunk the data chunk
@@ -240,11 +235,6 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * @throws java.lang.IllegalStateException when no response handler is set
    */
   Future<Void> write(String chunk, String enc);
-
-  /**
-   * Same as {@link #write(String,String)} but with an {@code handler} called when the operation completes
-   */
-  void write(String chunk, String enc, Handler<AsyncResult<Void>> handler);
 
   /**
    * If you send an HTTP request with the header {@code Expect} set to the value {@code 100-continue}
@@ -275,17 +265,10 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * This is normally used to implement HTTP 100-continue handling, see {@link #continueHandler(io.vertx.core.Handler)} for
    * more information.
    *
-   * @return a reference to this, so the API can be used fluently
+   * @return a future notified when the {@link HttpVersion} if it can be determined or {@code null} otherwise
    * @throws java.lang.IllegalStateException when no response handler is set
    */
   Future<Void> sendHead();
-
-  /**
-   * Like {@link #sendHead()} but with an handler after headers have been sent. The handler will be called with
-   * the {@link HttpVersion} if it can be determined or null otherwise.<p>
-   */
-  @Fluent
-  HttpClientRequest sendHead(Handler<AsyncResult<Void>> completionHandler);
 
   /**
    * Create an HTTP tunnel to the server.
@@ -305,43 +288,19 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    *
    * <p> HTTP/1.1 pipe-lined requests are not supported.f
    *
-   * @param handler the response completion handler
-   */
-  void connect(Handler<AsyncResult<HttpClientResponse>> handler);
-
-  /**
-   * Like {@link #connect(Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified with the server response
    */
   Future<HttpClientResponse> connect();
 
   /**
-   * Set a callback for the associated {@link HttpClientResponse}.
-   *
-   * <p> This method does not modify the current request being sent.
-   *
-   * @param handler the completion handler
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  HttpClientRequest response(Handler<AsyncResult<HttpClientResponse>> handler);
-
-  /**
-   * @return a future of the {@link HttpClientResponse}, see {@link #response(Handler)}
+   * @return a future of the {@link HttpClientResponse}, this method does not modify the current request being sent.
    */
   Future<HttpClientResponse> response();
 
   /**
    * Send the request with an empty body.
    *
-   * @param handler the completion handler for the {@link HttpClientResponse}
-   */
-  default void send(Handler<AsyncResult<HttpClientResponse>> handler) {
-    response(handler);
-    end();
-  }
-
-  /**
-   * Like {@link #send(Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified when the last bytes of the request is written
    */
   default Future<HttpClientResponse> send() {
     end();
@@ -351,15 +310,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   /**
    * Send the request with a string {@code body}.
    *
-   * @param handler the completion handler for the {@link HttpClientResponse}
-   */
-  default void send(String body, Handler<AsyncResult<HttpClientResponse>> handler) {
-    response(handler);
-    end(body);
-  }
-
-  /**
-   * Like {@link #send(String, Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified when the last bytes of the request is written
    */
   default Future<HttpClientResponse> send(String body) {
     end(body);
@@ -369,15 +320,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   /**
    * Send the request with a buffer {@code body}.
    *
-   * @param handler the completion handler for the {@link HttpClientResponse}
-   */
-  default void send(Buffer body, Handler<AsyncResult<HttpClientResponse>> handler) {
-    response(handler);
-    end(body);
-  }
-
-  /**
-   * Like {@link #send(Buffer, Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified when the last bytes of the request is written
    */
   default Future<HttpClientResponse> send(Buffer body) {
     end(body);
@@ -390,19 +333,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * <p> If the {@link HttpHeaders#CONTENT_LENGTH} is set then the request assumes this is the
    * length of the {stream}, otherwise the request will set a chunked {@link HttpHeaders#CONTENT_ENCODING}.
    *
-   * @param handler the completion handler for the {@link HttpClientResponse}
-   */
-  default void send(ReadStream<Buffer> body, Handler<AsyncResult<HttpClientResponse>> handler) {
-    MultiMap headers = headers();
-    if (headers == null || !headers.contains(HttpHeaders.CONTENT_LENGTH)) {
-      setChunked(true);
-    }
-    response(handler);
-    body.pipeTo(this);
-  }
-
-  /**
-   * Like {@link #send(ReadStream, Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified when the last bytes of the request is written
    */
   default Future<HttpClientResponse> send(ReadStream<Buffer> body) {
     MultiMap headers = headers();
@@ -423,11 +354,6 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   Future<Void> end(String chunk);
 
   /**
-   * Same as {@link #end(String)} but with an {@code handler} called when the operation completes
-   */
-  void end(String chunk, Handler<AsyncResult<Void>> handler);
-
-  /**
    * Same as {@link #end(Buffer)} but writes a String with the specified encoding
    *
    * @param chunk the data chunk
@@ -436,11 +362,6 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * @throws java.lang.IllegalStateException when no response handler is set
    */
   Future<Void> end(String chunk, String enc);
-
-  /**
-   * Same as {@link #end(String,String)} but with an {@code handler} called when the operation completes
-   */
-  void end(String chunk, String enc, Handler<AsyncResult<Void>> handler);
 
   /**
    * Same as {@link #end()} but writes some data to the request body before ending. If the request is not chunked and
@@ -453,12 +374,6 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   Future<Void> end(Buffer chunk);
 
   /**
-   * Same as {@link #end(String)} but with an {@code handler} called when the operation completes
-   */
-  @Override
-  void end(Buffer chunk, Handler<AsyncResult<Void>> handler);
-
-  /**
    * Ends the request. If no data has been written to the request body, and {@link #sendHead()} has not been called then
    * the actual request won't get written until this method gets called.
    * <p>
@@ -469,12 +384,6 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    */
   @Override
   Future<Void> end();
-
-  /**
-   * Same as {@link #end()} but with an {@code handler} called when the operation completes
-   */
-  @Override
-  void end(Handler<AsyncResult<Void>> handler);
 
   /**
    * Set's the amount of time after which if the request does not return any data within the timeout period an
@@ -504,7 +413,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    *   <li>{@link HttpClientRequest#headers()}</li>
    * </ul>
    *
-   * In addition the handler should call the {@link HttpClientRequest#response(Handler)} method to set an handler to
+   * In addition the handler should call the {@link HttpClientRequest#response()} method to set an handler to
    * process the response.<p/>
    *
    * @param handler the handler
@@ -567,7 +476,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * The frame is sent immediatly and is not subject to flow control.<p>
    *
    * This method must be called after the request headers have been sent and only for the protocol HTTP/2.
-   * The {@link #sendHead(Handler)} should be used for this purpose.
+   * The {@link #sendHead()} should be used for this purpose.
    *
    * @param type the 8-bit frame type
    * @param flags the 8-bit frame flags

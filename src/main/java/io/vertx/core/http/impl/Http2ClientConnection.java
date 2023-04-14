@@ -21,24 +21,14 @@ import io.netty.handler.codec.http2.Http2Exception;
 import io.netty.handler.codec.http2.Http2Headers;
 import io.netty.handler.codec.http2.Http2Stream;
 import io.netty.handler.timeout.IdleStateEvent;
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.MultiMap;
-import io.vertx.core.VertxException;
+import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.GoAway;
-import io.vertx.core.http.HttpClientOptions;
-import io.vertx.core.http.HttpClosedException;
-import io.vertx.core.http.HttpFrame;
-import io.vertx.core.http.HttpMethod;
-import io.vertx.core.http.HttpVersion;
-import io.vertx.core.http.StreamPriority;
-import io.vertx.core.http.StreamResetException;
+import io.vertx.core.http.*;
 import io.vertx.core.http.impl.headers.HeadersMultiMap;
 import io.vertx.core.http.impl.headers.Http2HeadersAdaptor;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.EventLoopContext;
+import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.spi.metrics.ClientMetrics;
 import io.vertx.core.spi.metrics.HttpClientMetrics;
 import io.vertx.core.spi.tracing.SpanKind;
@@ -136,36 +126,28 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
     return client.metrics();
   }
 
-  void upgradeStream(Object metric, ContextInternal context, Handler<AsyncResult<HttpClientStream>> completionHandler) {
-    Future<HttpClientStream> fut;
-    synchronized (this) {
-      try {
-        StreamImpl stream = createStream(context);
-        stream.init(handler.connection().stream(1));
-        ((Stream)stream).metric = metric;
-        fut = Future.succeededFuture(stream);
-      } catch (Exception e) {
-        fut = Future.failedFuture(e);
-      }
-    }
-    completionHandler.handle(fut);
+  HttpClientStream upgradeStream(Object metric, Object trace, ContextInternal context) throws Exception {
+    StreamImpl stream = createStream2(context);
+    stream.init(handler.connection().stream(1));
+    stream.metric = metric;
+    stream.trace = trace;
+    stream.requestEnded = true;
+    return stream;
   }
 
   @Override
-  public void createStream(ContextInternal context, Handler<AsyncResult<HttpClientStream>> handler) {
-    Future<HttpClientStream> fut;
+  public Future<HttpClientStream> createStream(ContextInternal context) {
     synchronized (this) {
       try {
-        StreamImpl stream = createStream(context);
-        fut = Future.succeededFuture(stream);
+        StreamImpl stream = createStream2(context);
+        return context.succeededFuture(stream);
       } catch (Exception e) {
-        fut = Future.failedFuture(e);
+        return context.failedFuture(e);
       }
     }
-    context.emit(fut, handler);
   }
 
-  private StreamImpl createStream(ContextInternal context) {
+  private StreamImpl createStream2(ContextInternal context) {
     return new StreamImpl(this, context, false);
   }
 
@@ -232,7 +214,7 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
     private HttpResponseHead response;
     protected Object metric;
     protected Object trace;
-    private boolean requestEnded;
+    protected boolean requestEnded;
     private boolean responseEnded;
     protected Handler<HttpResponseHead> headHandler;
     protected Handler<Buffer> chunkHandler;
@@ -271,15 +253,19 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
       return metric;
     }
 
-    @Override
-    void doWriteData(ByteBuf chunk, boolean end, Handler<AsyncResult<Void>> handler) {
-      super.doWriteData(chunk, end, handler);
+    public Object trace() {
+      return trace;
     }
 
     @Override
-    void doWriteHeaders(Http2Headers headers, boolean end, Handler<AsyncResult<Void>> handler) {
+    void doWriteData(ByteBuf chunk, boolean end, Promise<Void> promise) {
+      super.doWriteData(chunk, end, promise);
+    }
+
+    @Override
+    void doWriteHeaders(Http2Headers headers, boolean end, Promise<Void> promise) {
       isConnect = "CONNECT".contentEquals(headers.method());
-      super.doWriteHeaders(headers, end, handler);
+      super.doWriteHeaders(headers, end, promise);
     }
 
     @Override
@@ -361,7 +347,7 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
     }
 
     @Override
-    void onClose(HttpClosedException ex) {
+    void onClose() {
       if (conn.metrics != null) {
         if (!requestEnded || !responseEnded) {
           conn.metrics.requestReset(metric);
@@ -373,14 +359,15 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
         if (responseEnded && requestEnded) {
           err = null;
         } else {
-          err = ex;
+          err = HttpUtils.STREAM_CLOSED_EXCEPTION;
         }
         tracer.receiveResponse(context, response, trace, err, HttpUtils.CLIENT_RESPONSE_TAG_EXTRACTOR);
       }
       if (!responseEnded) {
-        onError(ex);
+        // NOT SURE OF THAT
+        onException(HttpUtils.STREAM_CLOSED_EXCEPTION);
       }
-      super.onClose(ex);
+      super.onClose();
       // commented to be used later when we properly define the HTTP/2 connection expiration from the pool
       // boolean disposable = conn.streams.isEmpty();
       if (!push) {
@@ -544,14 +531,16 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
     }
 
     @Override
-    public void writeHead(HttpRequestHead request, boolean chunked, ByteBuf buf, boolean end, StreamPriority priority, boolean connect, Handler<AsyncResult<Void>> handler) {
+    public Future<Void> writeHead(HttpRequestHead request, boolean chunked, ByteBuf buf, boolean end, StreamPriority priority, boolean connect) {
       priority(priority);
+      PromiseInternal<Void> promise = context.promise();
       conn.context.emit(null, v -> {
-        writeHeaders(request, buf, end, priority, connect, handler);
+        writeHeaders(request, buf, end, priority, connect, promise);
       });
+      return promise.future();
     }
 
-    private void writeHeaders(HttpRequestHead request, ByteBuf buf, boolean end, StreamPriority priority, boolean connect, Handler<AsyncResult<Void>> handler) {
+    private void writeHeaders(HttpRequestHead request, ByteBuf buf, boolean end, StreamPriority priority, boolean connect, Promise<Void> promise) {
       Http2Headers headers = new DefaultHttp2Headers();
       headers.method(request.method.name());
       boolean e;
@@ -579,23 +568,21 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
         headers.set(HttpHeaderNames.ACCEPT_ENCODING, Http1xClientConnection.determineCompressionAcceptEncoding());
       }
       try {
-        createStream(request, headers, handler);
+        createStream(request, headers);
       } catch (Http2Exception ex) {
-        if (handler != null) {
-          handler.handle(context.failedFuture(ex));
-        }
+        promise.fail(ex);
         handleException(ex);
         return;
       }
       if (buf != null) {
         doWriteHeaders(headers, false, null);
-        doWriteData(buf, e, handler);
+        doWriteData(buf, e, promise);
       } else {
-        doWriteHeaders(headers, e, handler);
+        doWriteHeaders(headers, e, promise);
       }
     }
 
-    private void createStream(HttpRequestHead head, Http2Headers headers, Handler<AsyncResult<Void>> handler) throws Http2Exception {
+    private void createStream(HttpRequestHead head, Http2Headers headers) throws Http2Exception {
       int id = this.conn.handler.encoder().connection().local().lastStreamCreated();
       if (id == 0) {
         id = 1;
@@ -621,33 +608,32 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
     }
 
     @Override
-    public void writeBuffer(ByteBuf buf, boolean end, Handler<AsyncResult<Void>> listener) {
+    public Future<Void> writeBuffer(ByteBuf buf, boolean end) {
+      Promise<Void> promise = context.promise();
+      writeData(buf, end, promise);
+      Future<Void> fut = promise.future();
       if (buf != null) {
         int size = buf.readableBytes();
         synchronized (this) {
           writeWindow += size;
         }
-        if (listener != null) {
-          Handler<AsyncResult<Void>> prev = listener;
-          listener = ar -> {
-            Handler<Void> drainHandler;
-            synchronized (this) {
-              boolean full = writeWindow > windowSize;
-              writeWindow -= size;
-              if (full && writeWindow <= windowSize) {
-                drainHandler = this.drainHandler;
-              } else {
-                drainHandler = null;
-              }
+        fut = fut.andThen(ar -> {
+          Handler<Void> drainHandler;
+          synchronized (this) {
+            boolean full = writeWindow > windowSize;
+            writeWindow -= size;
+            if (full && writeWindow <= windowSize) {
+              drainHandler = this.drainHandler;
+            } else {
+              drainHandler = null;
             }
-            if (drainHandler != null) {
-              drainHandler.handle(null);
-            }
-            prev.handle(ar);
-          };
-        }
+          }
+          if (drainHandler != null) {
+            drainHandler.handle(null);
+          }
+        });
       }
-      writeData(buf, end, listener);
+      return fut;
     }
 
     @Override

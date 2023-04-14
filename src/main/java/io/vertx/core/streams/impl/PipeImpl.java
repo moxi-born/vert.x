@@ -62,23 +62,20 @@ public class PipeImpl<T> implements Pipe<T> {
   }
 
   @Override
-  public void to(WriteStream<T> ws, Handler<AsyncResult<Void>> completionHandler) {
+  public Future<Void> to(WriteStream<T> ws) {
+    Promise<Void> promise = Promise.promise();
     if (ws == null) {
       throw new NullPointerException();
     }
-    boolean endOnSuccess;
-    boolean endOnFailure;
     synchronized (PipeImpl.this) {
       if (dst != null) {
         throw new IllegalStateException();
       }
       dst = ws;
-      endOnSuccess = this.endOnSuccess;
-      endOnFailure = this.endOnFailure;
     }
     Handler<Void> drainHandler = v -> src.resume();
     src.handler(item -> {
-      ws.write(item, this::handleWriteResult);
+      ws.write(item).onComplete(this::handleWriteResult);
       if (ws.writeQueueFull()) {
         src.pause();
         ws.drainHandler(drainHandler);
@@ -99,34 +96,35 @@ public class PipeImpl<T> implements Pipe<T> {
       } catch (Exception ignore) {
       }
       if (ar.succeeded()) {
-        handleSuccess(completionHandler);
+        handleSuccess(promise);
       } else {
         Throwable err = ar.cause();
         if (err instanceof WriteException) {
           src.resume();
           err = err.getCause();
         }
-        handleFailure(err, completionHandler);
+        handleFailure(err, promise);
       }
     });
+    return promise.future();
   }
 
-  private void handleSuccess(Handler<AsyncResult<Void>> completionHandler) {
+  private void handleSuccess(Promise<Void> promise) {
     if (endOnSuccess) {
-      dst.end(completionHandler);
+      dst.end().onComplete(promise);
     } else {
-      completionHandler.handle(Future.succeededFuture());
+      promise.complete();
     }
   }
 
-  private void handleFailure(Throwable cause, Handler<AsyncResult<Void>> completionHandler) {
-    Future<Void> res = Future.failedFuture(cause);
+  private void handleFailure(Throwable cause, Promise<Void> completionHandler) {
     if (endOnFailure){
-      dst.end(ignore -> {
-        completionHandler.handle(res);
-      });
+      dst
+        .end()
+        .transform(ar -> Future.<Void>failedFuture(cause))
+        .onComplete(completionHandler);
     } else {
-      completionHandler.handle(res);
+      completionHandler.fail(cause);
     }
   }
 

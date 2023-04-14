@@ -216,22 +216,12 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   Future<Void> write(String chunk, String enc);
 
   /**
-   * Same as {@link #write(String, String)} but with an {@code handler} called when the operation completes
-   */
-  void write(String chunk, String enc, Handler<AsyncResult<Void>> handler);
-
-  /**
    * Write a {@link String} to the response body, encoded in UTF-8.
    *
    * @param chunk  the string to write
    * @return a future completed with the body result
    */
   Future<Void> write(String chunk);
-
-  /**
-   * Same as {@link #write(String)} but with an {@code handler} called when the operation completes
-   */
-  void write(String chunk, Handler<AsyncResult<Void>> handler);
 
   /**
    * Used to write an interim 100 Continue response to signify that the client should send the rest of the request.
@@ -250,24 +240,12 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   Future<Void> writeEarlyHints(MultiMap headers);
 
   /**
-   * Same as {@link #writeEarlyHints(MultiMap)} but with an {@code handler} called when the operation completes
-   *
-   * @param headers  headers to write
-   */
-  void writeEarlyHints(MultiMap headers, Handler<AsyncResult<Void>> handler);
-
-  /**
    * Same as {@link #end(Buffer)} but writes a String in UTF-8 encoding before ending the response.
    *
    * @param chunk  the string to write before ending the response
    * @return a future completed with the body result
    */
   Future<Void> end(String chunk);
-
-  /**
-   * Same as {@link #end(String)} but with an {@code handler} called when the operation completes
-   */
-  void end(String chunk, Handler<AsyncResult<Void>> handler);
 
   /**
    * Same as {@link #end(Buffer)} but writes a String with the specified encoding before ending the response.
@@ -279,11 +257,6 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   Future<Void> end(String chunk, String enc);
 
   /**
-   * Same as {@link #end(String, String)} but with an {@code handler} called when the operation completes
-   */
-  void end(String chunk, String enc, Handler<AsyncResult<Void>> handler);
-
-  /**
    * Same as {@link #end()} but writes some data to the response body before ending. If the response is not chunked and
    * no other data has been written then the @code{Content-Length} header will be automatically set.
    *
@@ -292,12 +265,6 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    */
   @Override
   Future<Void> end(Buffer chunk);
-
-  /**
-   * Same as {@link #end(Buffer)} but with an {@code handler} called when the operation completes
-   */
-  @Override
-  void end(Buffer chunk, Handler<AsyncResult<Void>> handler);
 
   /**
    * Ends the response. If no data has been written to the response body,
@@ -313,14 +280,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   /**
    * Send the request with an empty body.
    *
-   * @param handler the completion handler
-   */
-  default void send(Handler<AsyncResult<Void>> handler) {
-    end(handler);
-  }
-
-  /**
-   * Like {@link #send(Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified when the response has been written
    */
   default Future<Void> send() {
     return end();
@@ -329,14 +289,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   /**
    * Send the request with a string {@code body}.
    *
-   * @param handler the completion handler
-   */
-  default void send(String body, Handler<AsyncResult<Void>> handler) {
-    end(body, handler);
-  }
-
-  /**
-   * Like {@link #send(String, Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified when the response has been written
    */
   default Future<Void> send(String body) {
     return end(body);
@@ -345,14 +298,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   /**
    * Send the request with a buffer {@code body}.
    *
-   * @param handler the completion handler
-   */
-  default void send(Buffer body, Handler<AsyncResult<Void>> handler) {
-    end(body, handler);
-  }
-
-  /**
-   * Like {@link #send(Buffer, Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified when the response has been written
    */
   default Future<Void> send(Buffer body) {
     return end(body);
@@ -364,18 +310,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * <p> If the {@link HttpHeaders#CONTENT_LENGTH} is set then the request assumes this is the
    * length of the {stream}, otherwise the request will set a chunked {@link HttpHeaders#CONTENT_ENCODING}.
    *
-   * @param handler the completion handler
-   */
-  default void send(ReadStream<Buffer> body, Handler<AsyncResult<Void>> handler) {
-    MultiMap headers = headers();
-    if (headers == null || !headers.contains(HttpHeaders.CONTENT_LENGTH)) {
-      setChunked(true);
-    }
-    body.pipeTo(this, handler);
-  }
-
-  /**
-   * Like {@link #send(ReadStream, Handler)} but returns a {@code Future} of the asynchronous result
+   * @return a future notified when the last bytes of the response was sent
    */
   default Future<Void> send(ReadStream<Buffer> body) {
     MultiMap headers = headers();
@@ -386,10 +321,12 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   }
 
   /**
-   * Same as {@link #sendFile(String, long)} using offset @code{0} which means starting from the beginning of the file.
+   * Send the request with a stream {@code body}.
    *
-   * @param filename  path to the file to serve
-   * @return a future completed with the body result
+   * <p> If the {@link HttpHeaders#CONTENT_LENGTH} is set then the request assumes this is the
+   * length of the {stream}, otherwise the request will set a chunked {@link HttpHeaders#CONTENT_ENCODING}.
+   *
+   * @return a future notified when the response has been written
    */
   default Future<Void> sendFile(String filename) {
     return sendFile(filename, 0);
@@ -420,46 +357,6 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * @return a future completed with the body result
    */
   Future<Void> sendFile(String filename, long offset, long length);
-
-  /**
-   * Like {@link #sendFile(String)} but providing a handler which will be notified once the file has been completely
-   * written to the wire.
-   *
-   * @param filename path to the file to serve
-   * @param resultHandler  handler that will be called on completion
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  default HttpServerResponse sendFile(String filename, Handler<AsyncResult<Void>> resultHandler) {
-    return sendFile(filename, 0, resultHandler);
-  }
-
-  /**
-   * Like {@link #sendFile(String, long)} but providing a handler which will be notified once the file has been completely
-   * written to the wire.
-   *
-   * @param filename path to the file to serve
-   * @param offset the offset to serve from
-   * @param resultHandler  handler that will be called on completion
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  default HttpServerResponse sendFile(String filename, long offset, Handler<AsyncResult<Void>> resultHandler) {
-    return sendFile(filename, offset, Long.MAX_VALUE, resultHandler);
-  }
-
-  /**
-   * Like {@link #sendFile(String, long, long)} but providing a handler which will be notified once the file has been
-   * completely written to the wire.
-   *
-   * @param filename path to the file to serve
-   * @param offset the offset to serve from
-   * @param length length the number of bytes to send
-   * @param resultHandler  handler that will be called on completion
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  HttpServerResponse sendFile(String filename, long offset, long length, Handler<AsyncResult<Void>> resultHandler);
 
   /**
    * Close the underlying TCP connection corresponding to the request.
@@ -514,45 +411,21 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   int streamId();
 
   /**
-   * Like {@link #push(HttpMethod, String, String, MultiMap, Handler)} with no headers.
-   */
-  @Fluent
-  default HttpServerResponse push(HttpMethod method, String host, String path, Handler<AsyncResult<HttpServerResponse>> handler) {
-    return push(method, host, path, null, handler);
-  }
-
-  /**
-   * Same as {@link #push(HttpMethod, String, String, Handler)} but with an {@code handler} called when the operation completes
+   * Like {@link #push(HttpMethod, String, String, MultiMap)} with no headers.
    */
   default Future<HttpServerResponse> push(HttpMethod method, String host, String path) {
     return push(method, host, path, (MultiMap) null);
   }
 
   /**
-   * Like {@link #push(HttpMethod, String, String, MultiMap, Handler)} with the host copied from the current request.
-   */
-  @Fluent
-  default HttpServerResponse push(HttpMethod method, String path, MultiMap headers, Handler<AsyncResult<HttpServerResponse>> handler) {
-    return push(method, null, path, headers, handler);
-  }
-
-  /**
-   * Same as {@link #push(HttpMethod, String, MultiMap, Handler)} but with an {@code handler} called when the operation completes
+   * Like {@link #push(HttpMethod, String, String, MultiMap)} with the host copied from the current request.
    */
   default Future<HttpServerResponse> push(HttpMethod method, String path, MultiMap headers) {
     return push(method, null, path, headers);
   }
 
   /**
-   * Like {@link #push(HttpMethod, String, String, MultiMap, Handler)} with the host copied from the current request.
-   */
-  @Fluent
-  default HttpServerResponse push(HttpMethod method, String path, Handler<AsyncResult<HttpServerResponse>> handler) {
-    return push(method, null, path, null, handler);
-  }
-
-  /**
-   * Same as {@link #push(HttpMethod, String, Handler)} but with an {@code handler} called when the operation completes
+   * Like {@link #push(HttpMethod, String, String, MultiMap)} with the host copied from the current request.
    */
   default Future<HttpServerResponse> push(HttpMethod method, String path) {
     return push(method, null, path);
@@ -573,20 +446,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * @param host the host of the promised request
    * @param path the path of the promised request
    * @param headers the headers of the promised request
-   * @param handler the handler notified when the response can be written
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  default HttpServerResponse push(HttpMethod method, String host, String path, MultiMap headers, Handler<AsyncResult<HttpServerResponse>> handler) {
-    Future<HttpServerResponse> fut = push(method, host, path, headers);
-    if (handler != null) {
-      fut.onComplete(handler);
-    }
-    return this;
-  }
-
-  /**
-   * Same as {@link #push(HttpMethod, String, String, MultiMap, Handler)} but with an {@code handler} called when the operation completes
+   * @return a future notified when the response can be written
    */
   Future<HttpServerResponse> push(HttpMethod method, String host, String path, MultiMap headers);
 

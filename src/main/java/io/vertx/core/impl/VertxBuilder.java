@@ -243,7 +243,7 @@ public class VertxBuilder {
   /**
    * Build and return the clustered vertx instance
    */
-  public void clusteredVertx(Handler<AsyncResult<Vertx>> handler) {
+  public Future<Vertx> clusteredVertx() {
     checkBeforeInstantiating();
     if (clusterManager == null) {
       throw new IllegalStateException("No ClusterManagerFactory instances found on classpath");
@@ -258,7 +258,7 @@ public class VertxBuilder {
       fileResolver,
       threadFactory,
       executorServiceFactory);
-    vertx.initClustered(options, handler);
+    return vertx.initClustered(options);
   }
 
   /**
@@ -376,7 +376,7 @@ public class VertxBuilder {
   /**
    * The native transport, it may be {@code null} or failed.
    */
-  static Transport nativeTransport() {
+  public static Transport nativeTransport() {
     Transport transport = null;
     try {
       Transport epoll = new EpollTransport();

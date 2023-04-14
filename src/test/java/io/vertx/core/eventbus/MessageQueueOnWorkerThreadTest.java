@@ -11,10 +11,7 @@
 
 package io.vertx.core.eventbus;
 
-import io.vertx.core.AbstractVerticle;
-import io.vertx.core.DeploymentOptions;
-import io.vertx.core.Promise;
-import io.vertx.core.Vertx;
+import io.vertx.core.*;
 import io.vertx.core.eventbus.impl.clustered.Serializer;
 import io.vertx.core.impl.VertxBuilder;
 import io.vertx.core.spi.cluster.ClusterManager;
@@ -42,9 +39,8 @@ public class MessageQueueOnWorkerThreadTest extends VertxTestBase {
     super.setUp();
     CustomNodeSelector selector = new CustomNodeSelector();
     VertxBuilder factory = new VertxBuilder().init().clusterNodeSelector(selector);
-    Promise<Vertx> promise = Promise.promise();
-    factory.clusteredVertx(promise);
-    vertx = promise.future().toCompletionStage().toCompletableFuture().get();
+    Future<Vertx> fut = factory.clusteredVertx();
+    vertx = fut.toCompletionStage().toCompletableFuture().get();
   }
 
   @Test
@@ -60,7 +56,7 @@ public class MessageQueueOnWorkerThreadTest extends VertxTestBase {
   private void test(boolean worker) throws Exception {
     int senderInstances = 20, messagesToSend = 100, expected = senderInstances * messagesToSend;
     waitFor(expected);
-    vertx.eventBus().consumer("foo", msg -> complete()).completionHandler(onSuccess(registered -> {
+    vertx.eventBus().consumer("foo", msg -> complete()).completion().onComplete(onSuccess(registered -> {
       DeploymentOptions options = new DeploymentOptions().setWorker(worker).setInstances(senderInstances);
       vertx.deployVerticle(() -> new SenderVerticle(worker, messagesToSend), options);
     }));
@@ -139,7 +135,7 @@ public class MessageQueueOnWorkerThreadTest extends VertxTestBase {
             count--;
             prom.complete();
           }
-        }, ar -> vertx.runOnContext(v -> sendMessage()));
+        }).onComplete(ar -> vertx.runOnContext(v -> sendMessage()));
       } else {
         if (count > 0) {
           vertx.eventBus().send("foo", "bar");

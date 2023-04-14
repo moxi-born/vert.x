@@ -12,16 +12,12 @@
 package io.vertx.core.http.impl;
 
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.file.AsyncFile;
 import io.vertx.core.http.HttpClosedException;
+import io.vertx.core.http.StreamResetException;
 import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.impl.ConnectionBase;
@@ -84,19 +80,20 @@ class HttpNetSocket implements NetSocket {
   }
 
   private void handleException(Throwable cause) {
-    if (cause instanceof HttpClosedException || cause.getClass() == ClosedChannelException.class) {
+    Handler<Throwable> handler = exceptionHandler();
+    if (handler != null) {
+      handler.handle(cause);
+    }
+    if (cause instanceof HttpClosedException) {
       Handler<Void> endHandler = endHandler();
       if (endHandler != null) {
         endHandler.handle(null);
       }
+    }
+    if (cause instanceof StreamResetException || cause instanceof HttpClosedException) {
       Handler<Void> closeHandler = closeHandler();
       if (closeHandler != null) {
         closeHandler.handle(null);
-      }
-    } else {
-      Handler<Throwable> handler = exceptionHandler();
-      if (handler != null) {
-        handler.handle(cause);
       }
     }
   }
@@ -177,18 +174,8 @@ class HttpNetSocket implements NetSocket {
   }
 
   @Override
-  public void write(Buffer data, Handler<AsyncResult<Void>> handler) {
-    writeStream.write(data, handler);
-  }
-
-  @Override
   public Future<Void> write(String str, String enc) {
     return write(Buffer.buffer(str, enc));
-  }
-
-  @Override
-  public void write(String str, String enc, Handler<AsyncResult<Void>> handler) {
-    writeStream.write(Buffer.buffer(str, enc), handler);
   }
 
   @Override
@@ -197,18 +184,8 @@ class HttpNetSocket implements NetSocket {
   }
 
   @Override
-  public void write(String str, Handler<AsyncResult<Void>> handler) {
-    writeStream.write(Buffer.buffer(str), handler);
-  }
-
-  @Override
   public Future<Void> end(Buffer data) {
     return writeStream.end(data);
-  }
-
-  @Override
-  public void end(Buffer buffer, Handler<AsyncResult<Void>> handler) {
-    writeStream.end(buffer, handler);
   }
 
   @Override
@@ -217,48 +194,14 @@ class HttpNetSocket implements NetSocket {
   }
 
   @Override
-  public void end(Handler<AsyncResult<Void>> handler) {
-    writeStream.end(handler);
-  }
-
-  @Override
   public Future<Void> sendFile(String filename, long offset, long length) {
-    Promise<Void> promise = context.promise();
-    sendFile(filename, offset, length, promise);
-    return promise.future();
-  }
-
-  @Override
-  public NetSocket sendFile(String filename, long offset, long length, Handler<AsyncResult<Void>> resultHandler) {
-    VertxInternal vertx = conn.getContext().owner();
-    Handler<AsyncResult<Void>> h;
-    if (resultHandler != null) {
-      Context resultCtx = vertx.getOrCreateContext();
-      h = ar -> {
-        resultCtx.runOnContext((v) -> {
-          resultHandler.handle(ar);
-        });
-      };
-    } else {
-      h = ar -> {};
-    }
-    HttpUtils.resolveFile(vertx, filename, offset, length, ar -> {
-      if (ar.succeeded()) {
-        AsyncFile file = ar.result();
-        file.pipe()
-          .endOnComplete(false)
-          .to(this, ar1 -> file.close(ar2 -> {
-          Throwable failure = ar1.failed() ? ar1.cause() : ar2.failed() ? ar2.cause() : null;
-          if(failure == null)
-            h.handle(ar1);
-          else
-            h.handle(Future.failedFuture(failure));
-        }));
-      } else {
-        h.handle(ar.mapEmpty());
-      }
-    });
-    return this;
+    return HttpUtils.resolveFile(conn.getContext(), filename, offset, length)
+      .compose(file -> file
+        .pipe()
+        .endOnComplete(false)
+        .to(this)
+        .eventually(v -> file.close())
+      );
   }
 
   @Override
@@ -287,11 +230,6 @@ class HttpNetSocket implements NetSocket {
   }
 
   @Override
-  public void close(Handler<AsyncResult<Void>> handler) {
-    end(handler);
-  }
-
-  @Override
   public NetSocket closeHandler(@Nullable Handler<Void> handler) {
     synchronized (conn) {
       closeHandler = handler;
@@ -303,18 +241,6 @@ class HttpNetSocket implements NetSocket {
     synchronized (conn) {
       return closeHandler;
     }
-  }
-
-  @Override
-  public NetSocket upgradeToSsl(Handler<AsyncResult<Void>> handler) {
-    handler.handle(upgradeToSsl());
-    return this;
-  }
-
-  @Override
-  public NetSocket upgradeToSsl(String serverName, Handler<AsyncResult<Void>> handler) {
-    handler.handle(upgradeToSsl(serverName));
-    return this;
   }
 
   @Override

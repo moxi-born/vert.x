@@ -11,7 +11,6 @@
 
 package io.vertx.core.http.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Closeable;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
@@ -310,24 +309,16 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider, Clos
    */
   public Future<HttpClientConnection> connect(SocketAddress server, SocketAddress peer) {
     EventLoopContext context = (EventLoopContext) vertx.getOrCreateContext();
-    Promise<HttpClientConnection> promise = context.promise();
     HttpChannelConnector connector = new HttpChannelConnector(this, netClient, null, null, options.getProtocolVersion(), options.isSsl(), options.isUseAlpn(), peer, server);
-    connector.httpConnect(context, promise);
-    return promise.future();
+    return connector.httpConnect(context);
   }
 
-  @Override
-  public void webSocket(WebSocketConnectOptions connectOptions, Handler<AsyncResult<WebSocket>> handler) {
-    webSocket(connectOptions, vertx.promise(handler));
-  }
-
-  private void webSocket(WebSocketConnectOptions connectOptions, PromiseInternal<WebSocket> promise) {
+  private Future<WebSocket> webSocket(ContextInternal ctx, WebSocketConnectOptions connectOptions) {
     int port = getPort(connectOptions);
     String host = getHost(connectOptions);
     SocketAddress addr = SocketAddress.inetSocketAddress(port, host);
     ProxyOptions proxyOptions = resolveProxyOptions(connectOptions.getProxyOptions(), addr);
     EndpointKey key = new EndpointKey(connectOptions.isSsl() != null ? connectOptions.isSsl() : options.isSsl(), proxyOptions, addr, addr);
-    ContextInternal ctx = promise.context();
     EventLoopContext eventLoopContext;
     if (ctx instanceof EventLoopContext) {
       eventLoopContext = (EventLoopContext) ctx;
@@ -343,81 +334,47 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider, Clos
         return new WebSocketEndpoint(null, maxPoolSize, connector, dispose);
       }
     };
-    webSocketCM.getConnection(
-      eventLoopContext,
-      key,
-      provider,
-      ar -> {
-        if (ar.succeeded()) {
-          Http1xClientConnection conn = (Http1xClientConnection) ar.result();
-          conn.toWebSocket(ctx,
-            connectOptions.getURI(),
-            connectOptions.getHeaders(),
-            connectOptions.getAllowOriginHeader(),
-            connectOptions.getVersion(),
-            connectOptions.getSubProtocols(),
-            connectOptions.getTimeout(),
-            connectOptions.isRegisterWriteHandlers(),
-            HttpClientImpl.this.options.getMaxWebSocketFrameSize(),
-            promise);
-        } else {
-          promise.fail(ar.cause());
-        }
+    // Work around for workers
+    return ctx
+      .succeededFuture()
+      .compose(v -> webSocketCM.getConnection(eventLoopContext, key, provider))
+      .compose(c -> {
+        Http1xClientConnection conn = (Http1xClientConnection) c;
+        return conn.toWebSocket(
+          ctx,
+          connectOptions.getURI(),
+          connectOptions.getHeaders(),
+          connectOptions.getAllowOriginHeader(),
+          connectOptions.getVersion(),
+          connectOptions.getSubProtocols(),
+          connectOptions.getTimeout(),
+          connectOptions.isRegisterWriteHandlers(),
+          HttpClientImpl.this.options.getMaxWebSocketFrameSize());
       });
   }
 
   @Override
   public Future<WebSocket> webSocket(int port, String host, String requestURI) {
-    Promise<WebSocket> promise = vertx.promise();
-    webSocket(port, host, requestURI, promise);
-    return promise.future();
+    return webSocket(new WebSocketConnectOptions().setURI(requestURI).setHost(host).setPort(port));
   }
 
   @Override
   public Future<WebSocket> webSocket(String host, String requestURI) {
-    Promise<WebSocket> promise = vertx.promise();
-    webSocket(host, requestURI, promise);
-    return promise.future();
+    return webSocket(options.getDefaultPort(), host, requestURI);
   }
 
   @Override
   public Future<WebSocket> webSocket(String requestURI) {
-    Promise<WebSocket> promise = vertx.promise();
-    webSocket(requestURI, promise);
-    return promise.future();
+    return webSocket(options.getDefaultPort(), options.getDefaultHost(), requestURI);
   }
 
   @Override
   public Future<WebSocket> webSocket(WebSocketConnectOptions options) {
-    Promise<WebSocket> promise = vertx.promise();
-    webSocket(options, promise);
-    return promise.future();
+    return webSocket(vertx.getOrCreateContext(), options);
   }
 
   @Override
   public Future<WebSocket> webSocketAbs(String url, MultiMap headers, WebsocketVersion version, List<String> subProtocols) {
-    Promise<WebSocket> promise = vertx.promise();
-    webSocketAbs(url, headers, version, subProtocols, promise);
-    return promise.future();
-  }
-
-  @Override
-  public void webSocket(int port, String host, String requestURI, Handler<AsyncResult<WebSocket>> handler) {
-    webSocket(new WebSocketConnectOptions().setURI(requestURI).setHost(host).setPort(port), handler);
-  }
-
-  @Override
-  public void webSocket(String host, String requestURI, Handler<AsyncResult<WebSocket>> handler) {
-    webSocket(options.getDefaultPort(), host, requestURI, handler);
-  }
-
-  @Override
-  public void webSocket(String requestURI, Handler<AsyncResult<WebSocket>> handler) {
-    webSocket(options.getDefaultPort(), options.getDefaultHost(), requestURI, handler);
-  }
-
-  @Override
-  public void webSocketAbs(String url, MultiMap headers, WebsocketVersion version, List<String> subProtocols, Handler<AsyncResult<WebSocket>> handler) {
     URI uri;
     try {
       uri = new URI(url);
@@ -448,27 +405,19 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider, Clos
       .setHeaders(headers)
       .setVersion(version)
       .setSubProtocols(subProtocols);
-    webSocket(options, handler);
-  }
-
-  @Override
-  public void request(RequestOptions options, Handler<AsyncResult<HttpClientRequest>> handler) {
-    ContextInternal ctx = vertx.getOrCreateContext();
-    PromiseInternal<HttpClientRequest> promise = ctx.promise(handler);
-    doRequest(options, promise);
+    return webSocket(options);
   }
 
   @Override
   public Future<HttpClientRequest> request(RequestOptions options) {
     ContextInternal ctx = vertx.getOrCreateContext();
     PromiseInternal<HttpClientRequest> promise = ctx.promise();
-    doRequest(options, promise);
+    try {
+      doRequest(options, promise);
+    } catch (Exception e) {
+      return ctx.failedFuture(e);
+    }
     return promise.future();
-  }
-
-  @Override
-  public void request(HttpMethod method, int port, String host, String requestURI, Handler<AsyncResult<HttpClientRequest>> handler) {
-    request(new RequestOptions().setMethod(method).setPort(port).setHost(host).setURI(requestURI), handler);
   }
 
   @Override
@@ -477,18 +426,8 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider, Clos
   }
 
   @Override
-  public void request(HttpMethod method, String host, String requestURI, Handler<AsyncResult<HttpClientRequest>> handler) {
-    request(method, options.getDefaultPort(), host, requestURI, handler);
-  }
-
-  @Override
   public Future<HttpClientRequest> request(HttpMethod method, String host, String requestURI) {
     return request(method, options.getDefaultPort(), host, requestURI);
-  }
-
-  @Override
-  public void request(HttpMethod method, String requestURI, Handler<AsyncResult<HttpClientRequest>> handler) {
-    request(method, options.getDefaultPort(), options.getDefaultHost(), requestURI, handler);
   }
 
   @Override
@@ -507,11 +446,6 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider, Clos
     webSocketCM.close();
     httpCM.close();
     completion.complete();
-  }
-
-  @Override
-  public void close(Handler<AsyncResult<Void>> handler) {
-    netClient.close(handler);
   }
 
   @Override
@@ -659,36 +593,28 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider, Clos
           dispose);
       }
     };
-    httpCM.getConnection(ctx, key, provider, timeout, ar1 -> {
-      if (ar1.succeeded()) {
-        Lease<HttpClientConnection> lease = ar1.result();
+    httpCM
+      .getConnection(ctx, key, provider, timeout)
+      .compose(lease -> {
         HttpClientConnection conn = lease.get();
-        conn.createStream(ctx, ar2 -> {
-          if (ar2.succeeded()) {
-            HttpClientStream stream = ar2.result();
-            stream.closeHandler(v -> {
-              lease.recycle();
-            });
-            HttpClientRequestImpl req = new HttpClientRequestImpl(this, stream, ctx.promise(), useSSL, method, server, host, port, requestURI, traceOperation);
-            if (headers != null) {
-              req.headers().setAll(headers);
-            }
-            if (followRedirects != null) {
-              req.setFollowRedirects(followRedirects);
-            }
-            if (timeout > 0L) {
-              // Maybe later ?
-              req.setTimeout(timeout);
-            }
-            requestPromise.tryComplete(req);
-          } else {
-            requestPromise.tryFail(ar2.cause());
+        return conn.createStream(ctx).<HttpClientRequest>map(stream -> {
+          stream.closeHandler(v -> {
+            lease.recycle();
+          });
+          HttpClientRequestImpl req = new HttpClientRequestImpl(this, stream, ctx.promise(), useSSL, method, server, host, port, requestURI, traceOperation);
+          if (headers != null) {
+            req.headers().setAll(headers);
           }
+          if (followRedirects != null) {
+            req.setFollowRedirects(followRedirects);
+          }
+          if (timeout > 0L) {
+            // Maybe later ?
+            req.setTimeout(timeout);
+          }
+          return req;
         });
-      } else {
-        requestPromise.tryFail(ar1.cause());
-      }
-    });
+      }).onComplete(requestPromise);
   }
 
   private void checkClosed() {

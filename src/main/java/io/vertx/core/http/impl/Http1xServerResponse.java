@@ -46,7 +46,6 @@ import io.vertx.core.spi.observability.HttpResponse;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.Set;
 
@@ -327,11 +326,6 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   }
 
   @Override
-  public void write(Buffer chunk, Handler<AsyncResult<Void>> handler) {
-    write(chunk.getByteBuf(), handler == null ? null : context.promise(handler));
-  }
-
-  @Override
   public Future<Void> write(String chunk, String enc) {
     PromiseInternal<Void> promise = context.promise();
     write(Buffer.buffer(chunk, enc).getByteBuf(), promise);
@@ -339,20 +333,10 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   }
 
   @Override
-  public void write(String chunk, String enc, Handler<AsyncResult<Void>> handler) {
-    write(Buffer.buffer(chunk, enc).getByteBuf(), handler == null ? null : context.promise(handler));
-  }
-
-  @Override
   public Future<Void> write(String chunk) {
     PromiseInternal<Void> promise = context.promise();
     write(Buffer.buffer(chunk).getByteBuf(), promise);
     return promise.future();
-  }
-
-  @Override
-  public void write(String chunk, Handler<AsyncResult<Void>> handler) {
-    write(Buffer.buffer(chunk).getByteBuf(), handler == null ? null : context.promise(handler));
   }
 
   @Override
@@ -364,12 +348,6 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   @Override
   public Future<Void> writeEarlyHints(MultiMap headers) {
     PromiseInternal<Void> promise = context.promise();
-    writeEarlyHints(headers, promise);
-    return promise.future();
-  }
-
-  @Override
-  public void writeEarlyHints(MultiMap headers, Handler<AsyncResult<Void>> handler) {
     HeadersMultiMap headersMultiMap;
     if (headers instanceof HeadersMultiMap) {
       headersMultiMap = (HeadersMultiMap) headers;
@@ -380,7 +358,8 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
     synchronized (conn) {
       checkHeadWritten();
     }
-    conn.write103EarlyHints(headersMultiMap, context.promise(handler));
+    conn.write103EarlyHints(headersMultiMap, promise);
+    return promise.future();
   }
 
   @Override
@@ -389,18 +368,8 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   }
 
   @Override
-  public void end(String chunk, Handler<AsyncResult<Void>> handler) {
-    end(Buffer.buffer(chunk), handler);
-  }
-
-  @Override
   public Future<Void> end(String chunk, String enc) {
     return end(Buffer.buffer(chunk, enc));
-  }
-
-  @Override
-  public void end(String chunk, String enc, Handler<AsyncResult<Void>> handler) {
-    end(Buffer.buffer(chunk, enc), handler);
   }
 
   @Override
@@ -408,11 +377,6 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
     PromiseInternal<Void> promise = context.promise();
     end(chunk, promise);
     return promise.future();
-  }
-
-  @Override
-  public void end(Buffer chunk, Handler<AsyncResult<Void>> handler) {
-    end(chunk, handler == null ? null : context.promise(handler));
   }
 
   private void end(Buffer chunk, PromiseInternal<Void> listener) {
@@ -479,21 +443,74 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   }
 
   @Override
-  public void end(Handler<AsyncResult<Void>> handler) {
-    end(EMPTY_BUFFER, handler);
-  }
-
-  @Override
   public Future<Void> sendFile(String filename, long offset, long length) {
-    Promise<Void> promise = context.promise();
-    sendFile(filename, offset, length, promise);
-    return promise.future();
-  }
+    synchronized (conn) {
+      checkValid();
+      if (headWritten) {
+        throw new IllegalStateException("Head already written");
+      }
+      File file = vertx.resolveFile(filename);
+      ContextInternal ctx = vertx.getOrCreateContext();
+      RandomAccessFile raf;
+      try {
+        raf = new RandomAccessFile(file, "r");
+      } catch (Exception e) {
+        return ctx.failedFuture(e);
+      }
+      long actualLength = Math.min(length, file.length() - offset);
+      long actualOffset = Math.min(offset, file.length());
+      if (!headers.contains(HttpHeaders.CONTENT_TYPE)) {
+        String contentType = MimeMapping.getMimeTypeForFilename(filename);
+        if (contentType != null) {
+          headers.set(HttpHeaders.CONTENT_TYPE, contentType);
+        }
+      }
+      prepareHeaders(actualLength);
+      bytesWritten = actualLength;
+      written = true;
 
-  @Override
-  public HttpServerResponse sendFile(String filename, long start, long end, Handler<AsyncResult<Void>> resultHandler) {
-    doSendFile(filename, start, end, resultHandler);
-    return this;
+      conn.writeToChannel(new AssembledHttpResponse(head, version, status, headers));
+
+      ChannelFuture channelFut = conn.sendFile(raf, actualOffset, actualLength);
+      channelFut.addListener(future -> {
+
+        // write an empty last content to let the http encoder know the response is complete
+        if (future.isSuccess()) {
+          ChannelPromise pr = conn.channelHandlerContext().newPromise();
+          conn.writeToChannel(LastHttpContent.EMPTY_LAST_CONTENT, pr);
+          if (!keepAlive) {
+            pr.addListener(a -> {
+              closeConnAfterWrite();
+            });
+          }
+        }
+
+        // signal body end handler
+        Handler<Void> handler;
+        synchronized (conn) {
+          handler = bodyEndHandler;
+        }
+        if (handler != null) {
+          context.emit(handler);
+        }
+
+        // allow to write next response
+        conn.responseComplete();
+
+        // signal end handler
+        Handler<Void> end;
+        synchronized (conn) {
+          end = !closed ? endHandler : null;
+        }
+        if (null != end) {
+          context.emit(end);
+        }
+      });
+
+      PromiseInternal<Void> promise = ctx.promise();
+      channelFut.addListener(promise);
+      return promise.future();
+    }
   }
 
   @Override
@@ -537,106 +554,6 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
     synchronized (conn) {
       this.bodyEndHandler = handler;
       return this;
-    }
-  }
-
-  private void doSendFile(String filename, long offset, long length, Handler<AsyncResult<Void>> resultHandler) {
-    synchronized (conn) {
-      checkValid();
-      if (headWritten) {
-        throw new IllegalStateException("Head already written");
-      }
-      File file = vertx.resolveFile(filename);
-
-      if (!file.exists()) {
-        if (resultHandler != null) {
-          ContextInternal ctx = vertx.getOrCreateContext();
-          ctx.runOnContext((v) -> resultHandler.handle(Future.failedFuture(new FileNotFoundException())));
-        } else {
-          log.error("File not found: " + filename);
-        }
-        return;
-      }
-
-      long contentLength = Math.min(length, file.length() - offset);
-      bytesWritten = contentLength;
-      if (!headers.contains(HttpHeaders.CONTENT_TYPE)) {
-        String contentType = MimeMapping.getMimeTypeForFilename(filename);
-        if (contentType != null) {
-          headers.set(HttpHeaders.CONTENT_TYPE, contentType);
-        }
-      }
-      prepareHeaders(bytesWritten);
-
-      ChannelFuture channelFuture;
-      RandomAccessFile raf = null;
-      try {
-        raf = new RandomAccessFile(file, "r");
-        conn.writeToChannel(new AssembledHttpResponse(head, version, status, headers));
-        channelFuture = conn.sendFile(raf, Math.min(offset, file.length()), contentLength);
-      } catch (IOException e) {
-        try {
-          if (raf != null) {
-            raf.close();
-          }
-        } catch (IOException ignore) {
-        }
-        if (resultHandler != null) {
-          ContextInternal ctx = vertx.getOrCreateContext();
-          ctx.runOnContext((v) -> resultHandler.handle(Future.failedFuture(e)));
-        } else {
-          log.error("Failed to send file", e);
-        }
-        return;
-      }
-      written = true;
-
-      ContextInternal ctx = vertx.getOrCreateContext();
-      channelFuture.addListener(future -> {
-
-        // write an empty last content to let the http encoder know the response is complete
-        if (future.isSuccess()) {
-          ChannelPromise pr = conn.channelHandlerContext().newPromise();
-          conn.writeToChannel(LastHttpContent.EMPTY_LAST_CONTENT, pr);
-          if (!keepAlive) {
-            pr.addListener(a -> {
-              closeConnAfterWrite();
-            });
-          }
-        }
-
-        // signal completion handler when there is one
-        if (resultHandler != null) {
-          AsyncResult<Void> res;
-          if (future.isSuccess()) {
-            res = Future.succeededFuture();
-          } else {
-            res = Future.failedFuture(future.cause());
-          }
-          ctx.emit(null, v -> resultHandler.handle(res));
-        }
-
-        // signal body end handler
-        Handler<Void> handler;
-        synchronized (conn) {
-          handler = bodyEndHandler;
-        }
-        if (handler != null) {
-          context.emit(handler);
-        }
-
-        // allow to write next response
-        conn.responseComplete();
-
-        // signal end handler
-        Handler<Void> end;
-        synchronized (conn) {
-          end = !closed ? endHandler : null;
-        }
-        if (null != end) {
-          context.emit(end);
-        }
-      });
     }
   }
 

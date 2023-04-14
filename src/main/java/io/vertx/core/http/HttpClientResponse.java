@@ -11,9 +11,7 @@
 
 package io.vertx.core.http;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import io.vertx.codegen.annotations.*;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
@@ -134,16 +132,6 @@ public interface HttpClientResponse extends ReadStream<Buffer> {
   }
 
   /**
-   * Same as {@link #body()} but with an {@code handler} called when the operation completes
-   */
-  @Fluent
-  default HttpClientResponse body(Handler<AsyncResult<Buffer>> handler) {
-    Future<Buffer> fut = body();
-    fut.onComplete(handler);
-    return this;
-  }
-
-  /**
    * Convenience method for receiving the entire request body in one piece.
    * <p>
    * This saves you having to manually set a dataHandler and an endHandler and append the chunks of the body until
@@ -152,13 +140,6 @@ public interface HttpClientResponse extends ReadStream<Buffer> {
    * @return a future completed with the body result
    */
   Future<Buffer> body();
-
-  /**
-   * Same as {@link #end()} but with an {@code handler} called when the operation completes
-   */
-  default void end(Handler<AsyncResult<Void>> handler) {
-    end().onComplete(handler);
-  }
 
   /**
    * Returns a future signaling when the response has been fully received successfully or failed.

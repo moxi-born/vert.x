@@ -17,7 +17,6 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.FileRegion;
 import io.netty.handler.codec.http.FullHttpMessage;
 import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.HttpMessage;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
@@ -28,7 +27,6 @@ import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.stream.ChunkedFile;
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
@@ -127,11 +125,6 @@ abstract class Http1xConnectionBase<S extends WebSocketImplBase<S>> extends Conn
   }
 
   @Override
-  public void shutdown(long timeout, Handler<AsyncResult<Void>> handler) {
-    throw new UnsupportedOperationException("HTTP/1.x connections cannot be shutdown");
-  }
-
-  @Override
   public Future<Void> shutdown(long timeoutMs) {
     throw new UnsupportedOperationException("HTTP/1.x connections cannot be shutdown");
   }
@@ -147,11 +140,6 @@ abstract class Http1xConnectionBase<S extends WebSocketImplBase<S>> extends Conn
   }
 
   @Override
-  public HttpConnection updateSettings(Http2Settings settings, Handler<AsyncResult<Void>> completionHandler) {
-    throw new UnsupportedOperationException("HTTP/1.x connections don't support SETTINGS");
-  }
-
-  @Override
   public Http2Settings remoteSettings() {
     throw new UnsupportedOperationException("HTTP/1.x connections don't support SETTINGS");
   }
@@ -159,11 +147,6 @@ abstract class Http1xConnectionBase<S extends WebSocketImplBase<S>> extends Conn
   @Override
   public HttpConnection remoteSettingsHandler(Handler<Http2Settings> handler) {
     throw new UnsupportedOperationException("HTTP/1.x connections don't support SETTINGS");
-  }
-
-  @Override
-  public HttpConnection ping(Buffer data, Handler<AsyncResult<Buffer>> pongHandler) {
-    throw new UnsupportedOperationException("HTTP/1.x connections don't support PING");
   }
 
   @Override

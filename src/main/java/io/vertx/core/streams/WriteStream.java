@@ -59,27 +59,13 @@ public interface WriteStream<T> extends StreamBase {
   Future<Void> write(T data);
 
   /**
-   * Same as {@link #write(T)} but with an {@code handler} called when the operation completes
-   */
-  void write(T data, Handler<AsyncResult<Void>> handler);
-
-  /**
    * Ends the stream.
    * <p>
    * Once the stream has ended, it cannot be used any more.
    *
    * @return a future completed with the result
    */
-  default Future<Void> end() {
-    Promise<Void> promise = Promise.promise();
-    end(promise);
-    return promise.future();
-  }
-
-  /**
-   * Same as {@link #end()} but with an {@code handler} called when the operation completes
-   */
-  void end(Handler<AsyncResult<Void>> handler);
+  Future<Void> end();
 
   /**
    * Same as {@link #end()} but writes some data to the stream before ending.
@@ -90,26 +76,7 @@ public interface WriteStream<T> extends StreamBase {
    * @return a future completed with the result
    */
   default Future<Void> end(T data) {
-    Promise<Void> provide = Promise.promise();
-    end(data, provide);
-    return provide.future();
-  }
-
-  /**
-   * Same as {@link #end(T)} but with an {@code handler} called when the operation completes
-   */
-  default void end(T data, Handler<AsyncResult<Void>> handler) {
-    if (handler != null) {
-      write(data, ar -> {
-        if (ar.succeeded()) {
-          end(handler);
-        } else {
-          handler.handle(ar);
-        }
-      });
-    } else {
-      end(data);
-    }
+    return write(data).compose(v -> end());
   }
 
   /**

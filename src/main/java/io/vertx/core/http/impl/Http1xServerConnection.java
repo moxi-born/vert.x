@@ -23,6 +23,7 @@ import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.EmptyHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpContent;
+import io.netty.handler.codec.http.DefaultHttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpObject;
@@ -146,21 +147,24 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
   }
 
   public void handleMessage(Object msg) {
-    if (msg instanceof HttpRequest) {
-      DefaultHttpRequest request = (DefaultHttpRequest) msg;
-      ContextInternal requestCtx = streamContextSupplier.get();
-      Http1xServerRequest req = new Http1xServerRequest(this, request, requestCtx);
-      requestInProgress = req;
-      if (responseInProgress != null) {
-        enqueueRequest(req);
-        return;
-      }
-      responseInProgress = requestInProgress;
-      req.handleBegin(writable);
-      Handler<HttpServerRequest> handler = request.decoderResult().isSuccess() ? requestHandler : invalidRequestHandler;
-      req.context.emit(req, handler);
-    } else if (msg == LastHttpContent.EMPTY_LAST_CONTENT) {
+    assert msg != null;
+    // fast-path first
+    if (msg == LastHttpContent.EMPTY_LAST_CONTENT) {
       onEnd();
+    } else if (msg instanceof DefaultHttpRequest) {
+        // fast path type check vs concrete class
+        DefaultHttpRequest request = (DefaultHttpRequest) msg;
+        ContextInternal requestCtx = streamContextSupplier.get();
+        Http1xServerRequest req = new Http1xServerRequest(this, request, requestCtx);
+        requestInProgress = req;
+        if (responseInProgress != null) {
+          enqueueRequest(req);
+          return;
+        }
+        responseInProgress = requestInProgress;
+        req.handleBegin(writable);
+        Handler<HttpServerRequest> handler = request.decoderResult().isSuccess() ? requestHandler : invalidRequestHandler;
+        req.context.emit(req, handler);
     } else {
       handleOther(msg);
     }
@@ -173,7 +177,8 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
   }
 
   private void handleOther(Object msg) {
-    if (msg instanceof HttpContent) {
+    // concrete type check first
+    if (msg instanceof DefaultHttpContent || msg instanceof HttpContent) {
       onContent(msg);
     } else if (msg instanceof WebSocketFrame) {
       handleWsFrame((WebSocketFrame) msg);

@@ -13,7 +13,6 @@ package io.vertx.core.impl;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.resolver.AddressResolverGroup;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Closeable;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
@@ -205,18 +204,8 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public void close(Handler<AsyncResult<Void>> completionHandler) {
-    delegate.close(completionHandler);
-  }
-
-  @Override
   public Future<String> deployVerticle(Verticle verticle) {
     return delegate.deployVerticle(verticle);
-  }
-
-  @Override
-  public void deployVerticle(Verticle verticle, Handler<AsyncResult<String>> completionHandler) {
-    delegate.deployVerticle(verticle, completionHandler);
   }
 
   @Override
@@ -235,28 +224,8 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public void deployVerticle(Verticle verticle, DeploymentOptions options, Handler<AsyncResult<String>> completionHandler) {
-    delegate.deployVerticle(verticle, options, completionHandler);
-  }
-
-  @Override
-  public void deployVerticle(Class<? extends Verticle> verticleClass, DeploymentOptions options, Handler<AsyncResult<String>> completionHandler) {
-    delegate.deployVerticle(verticleClass, options, completionHandler);
-  }
-
-  @Override
-  public void deployVerticle(Supplier<Verticle> verticleSupplier, DeploymentOptions options, Handler<AsyncResult<String>> completionHandler) {
-    delegate.deployVerticle(verticleSupplier, options, completionHandler);
-  }
-
-  @Override
   public Future<String> deployVerticle(String name) {
     return delegate.deployVerticle(name);
-  }
-
-  @Override
-  public void deployVerticle(String name, Handler<AsyncResult<String>> completionHandler) {
-    delegate.deployVerticle(name, completionHandler);
   }
 
   @Override
@@ -265,18 +234,8 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public void deployVerticle(String name, DeploymentOptions options, Handler<AsyncResult<String>> completionHandler) {
-    delegate.deployVerticle(name, options, completionHandler);
-  }
-
-  @Override
   public Future<Void> undeploy(String deploymentID) {
     return delegate.undeploy(deploymentID);
-  }
-
-  @Override
-  public void undeploy(String deploymentID, Handler<AsyncResult<Void>> completionHandler) {
-    delegate.undeploy(deploymentID, completionHandler);
   }
 
   @Override
@@ -302,16 +261,6 @@ public abstract class VertxWrapper implements VertxInternal {
   @Override
   public boolean isClustered() {
     return delegate.isClustered();
-  }
-
-  @Override
-  public <T> void executeBlocking(Handler<Promise<T>> blockingCodeHandler, boolean ordered, Handler<AsyncResult<T>> asyncResultHandler) {
-    delegate.executeBlocking(blockingCodeHandler, ordered, asyncResultHandler);
-  }
-
-  @Override
-  public <T> void executeBlocking(Handler<Promise<T>> blockingCodeHandler, Handler<AsyncResult<T>> asyncResultHandler) {
-    delegate.executeBlocking(blockingCodeHandler, asyncResultHandler);
   }
 
   @Override
@@ -347,11 +296,6 @@ public abstract class VertxWrapper implements VertxInternal {
   @Override
   public <T> PromiseInternal<T> promise() {
     return delegate.promise();
-  }
-
-  @Override
-  public <T> PromiseInternal<T> promise(Handler<AsyncResult<T>> handler) {
-    return delegate.promise(handler);
   }
 
   @Override
@@ -510,13 +454,13 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public <T> void executeBlockingInternal(Handler<Promise<T>> blockingCodeHandler, Handler<AsyncResult<T>> asyncResultHandler) {
-    delegate.executeBlockingInternal(blockingCodeHandler, asyncResultHandler);
+  public <T> Future<T> executeBlockingInternal(Handler<Promise<T>> blockingCodeHandler) {
+    return delegate.executeBlockingInternal(blockingCodeHandler);
   }
 
   @Override
-  public <T> void executeBlockingInternal(Handler<Promise<T>> blockingCodeHandler, boolean ordered, Handler<AsyncResult<T>> asyncResultHandler) {
-    delegate.executeBlockingInternal(blockingCodeHandler, ordered, asyncResultHandler);
+  public <T> Future<T> executeBlockingInternal(Handler<Promise<T>> blockingCodeHandler, boolean ordered) {
+    return delegate.executeBlockingInternal(blockingCodeHandler, ordered);
   }
 
   @Override
@@ -530,8 +474,8 @@ public abstract class VertxWrapper implements VertxInternal {
   }
 
   @Override
-  public void resolveAddress(String hostname, Handler<AsyncResult<InetAddress>> resultHandler) {
-    delegate.resolveAddress(hostname, resultHandler);
+  public Future<InetAddress> resolveAddress(String hostname) {
+    return delegate.resolveAddress(hostname);
   }
 
   @Override
