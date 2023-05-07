@@ -14,19 +14,15 @@ package io.vertx.core.http;
 import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.VertxGen;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
-import io.vertx.core.buffer.Buffer;
 import io.vertx.core.metrics.Measured;
 import io.vertx.core.net.SSLOptions;
-import io.vertx.core.net.SocketAddress;
-import io.vertx.core.streams.ReadStream;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
-import java.util.function.Predicate;
 
 /**
  * An asynchronous HTTP client.
@@ -60,8 +56,7 @@ import java.util.function.Predicate;
 public interface HttpClient extends Measured {
 
   /**
-   * Create an HTTP request to send to the server. The {@code handler}
-   * is called when the request is ready to be sent.
+   * Create an HTTP request to send to the server.
    *
    * @param options    the request options
    * @return a future notified when the request is ready to be sent
@@ -69,8 +64,7 @@ public interface HttpClient extends Measured {
   Future<HttpClientRequest> request(RequestOptions options);
 
   /**
-   * Create an HTTP request to send to the server at the {@code host} and {@code port}. The {@code handler}
-   * is called when the request is ready to be sent.
+   * Create an HTTP request to send to the server at the {@code host} and {@code port}.
    *
    * @param method     the HTTP method
    * @param port       the port
@@ -81,8 +75,7 @@ public interface HttpClient extends Measured {
   Future<HttpClientRequest> request(HttpMethod method, int port, String host, String requestURI);
 
   /**
-   * Create an HTTP request to send to the server at the {@code host} and default port. The {@code handler}
-   * is called when the request is ready to be sent.
+   * Create an HTTP request to send to the server at the {@code host} and default port.
    *
    * @param method     the HTTP method
    * @param host       the host
@@ -92,8 +85,7 @@ public interface HttpClient extends Measured {
   Future<HttpClientRequest> request(HttpMethod method, String host, String requestURI);
 
   /**
-   * Create an HTTP request to send to the server at the default host and port. The {@code handler}
-   * is called when the request is ready to be sent.
+   * Create an HTTP request to send to the server at the default host and port.
    *
    * @param method     the HTTP method
    * @param requestURI the relative URI
@@ -102,7 +94,8 @@ public interface HttpClient extends Measured {
   Future<HttpClientRequest> request(HttpMethod method, String requestURI);
 
   /**
-   * Connect a WebSocket to the specified port, host and relative request URI
+   * Connect a WebSocket to the specified port, host and relative request URI.
+   *
    * @param port  the port
    * @param host  the host
    * @param requestURI  the relative URI
@@ -111,7 +104,8 @@ public interface HttpClient extends Measured {
   Future<WebSocket> webSocket(int port, String host, String requestURI);
 
   /**
-   * Connect a WebSocket to the host and relative request URI and default port
+   * Connect a WebSocket to the host and relative request URI and default port.
+   *
    * @param host  the host
    * @param requestURI  the relative URI
    * @return a future notified when the WebSocket when connected
@@ -119,7 +113,8 @@ public interface HttpClient extends Measured {
   Future<WebSocket> webSocket(String host, String requestURI);
 
   /**
-   * Connect a WebSocket at the relative request URI using the default host and port
+   * Connect a WebSocket at the relative request URI using the default host and port.
+   *
    * @param requestURI  the relative URI
    * @return a future notified when the WebSocket when connected
    */
@@ -192,10 +187,28 @@ public interface HttpClient extends Measured {
   Function<HttpClientResponse, Future<RequestOptions>> redirectHandler();
 
   /**
-   * Close the client. Closing will close down any pooled connections.
-   * Clients should always be closed after use.
+   * Close the client immediately ({@code close(0, TimeUnit.SECONDS}).
+   *
    * @return a future notified when the client is closed
    */
-  Future<Void> close();
+  default Future<Void> close() {
+    return close(0, TimeUnit.SECONDS);
+  }
+
+  /**
+   * Initiate the client close sequence.
+   *
+   * <p> Connections are taken out of service and closed when all inflight requests are processed, client connection are
+   * immediately removed from the pool. When all connections are closed the client is closed. When the timeout
+   * expires, all unclosed connections are immediately closed.
+   *
+   * <ul>
+   *   <li>HTTP/2 connections will send a go away frame immediately to signal the other side the connection will close</li>
+   *   <li>HTTP/1.x client connection will be closed after the current response is received</li>
+   * </ul>
+   *
+   * @return a future notified when the client is closed
+   */
+  Future<Void> close(long timeout, TimeUnit timeUnit);
 
 }

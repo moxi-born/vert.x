@@ -10,20 +10,11 @@
  */
 package io.vertx.core.impl;
 
-import io.vertx.core.DeploymentOptions;
-
 /**
- * No-op implementation for Java 11 and above.
+ * Keeps a reference to an owner close future so we can unregister from it when the closeable is closed.
  */
-class LoaderManager {
+abstract class NestedCloseable {
 
-  /**
-   * @return {@code null}
-   */
-  ClassLoaderHolder getClassLoader(DeploymentOptions options) {
-    return null;
-  }
+  CloseFuture owner;
 
-  void release(ClassLoaderHolder holder) {
-  }
 }

@@ -29,7 +29,7 @@ import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.core.net.impl.NetClientImpl;
+import io.vertx.core.net.impl.NetClientInternal;
 import io.vertx.core.net.impl.NetSocketImpl;
 import io.vertx.core.net.impl.VertxHandler;
 import io.vertx.core.spi.metrics.ClientMetrics;
@@ -49,7 +49,7 @@ import static io.vertx.core.http.HttpMethod.OPTIONS;
 public class HttpChannelConnector {
 
   private final HttpClientImpl client;
-  private final NetClientImpl netClient;
+  private final NetClientInternal netClient;
   private final HttpClientOptions options;
   private final ProxyOptions proxyOptions;
   private final ClientMetrics metrics;
@@ -60,7 +60,7 @@ public class HttpChannelConnector {
   private final SocketAddress server;
 
   public HttpChannelConnector(HttpClientImpl client,
-                              NetClientImpl netClient,
+                              NetClientInternal netClient,
                               ProxyOptions proxyOptions,
                               ClientMetrics metrics,
                               HttpVersion version,
@@ -141,8 +141,12 @@ public class HttpChannelConnector {
 
   public Future<HttpClientConnection> httpConnect(EventLoopContext context) {
     Promise<NetSocket> promise = context.promise();
+    Future<NetSocket> future = promise.future();
+    // We perform the compose operation before calling connect to be sure that the composition happens
+    // before the promise is completed by the connect operation
+    Future<HttpClientConnection> ret = future.compose(so -> wrap(context, so));
     connect(context, promise);
-    return promise.future().flatMap(so -> wrap(context, so));
+    return ret;
   }
 
   private void applyHttp2ConnectionOptions(ChannelPipeline pipeline) {

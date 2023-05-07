@@ -2720,8 +2720,10 @@ public abstract class HttpTest extends HttpTestBase {
 
     startServer(testAddress);
     client.request(requestOptions)
-      .compose(HttpClientRequest::send)
-      .compose(HttpClientResponse::body)
+      .compose(req -> req
+        .send()
+        .andThen(onSuccess(resp -> assertEquals(200, resp.statusCode())))
+        .compose(HttpClientResponse::body))
       .onComplete(onSuccess(req -> {
         testComplete();
       }));
@@ -3092,10 +3094,10 @@ public abstract class HttpTest extends HttpTestBase {
     });
 
     startServer(testAddress);
-    client
-      .request(requestOptions)
-      .compose(HttpClientRequest::send)
-      .compose(HttpClientResponse::body)
+    client.request(requestOptions).compose(req -> req
+      .send()
+      .andThen(onSuccess(resp -> assertEquals(200, resp.statusCode())))
+      .compose(HttpClientResponse::body))
       .onComplete(onSuccess(buff -> {
         assertEquals(bodyBuff, buff);
         testComplete();
@@ -3348,9 +3350,10 @@ public abstract class HttpTest extends HttpTestBase {
       .toCompletableFuture()
       .get(20, TimeUnit.SECONDS);
     vertx.deployVerticle(new AbstractVerticle() {
+      HttpClient client;
       @Override
       public void start(Promise<Void> startPromise) {
-        HttpClient client = vertx.createHttpClient(createBaseClientOptions().setMaxPoolSize(1));
+        client = vertx.createHttpClient(createBaseClientOptions().setMaxPoolSize(1));
         for (int i = 0; i < numReq; i++) {
           client.request(requestOptions)
             .compose(req -> req
@@ -3393,9 +3396,10 @@ public abstract class HttpTest extends HttpTestBase {
       .toCompletableFuture()
       .get(20, TimeUnit.SECONDS);
     vertx.deployVerticle(new AbstractVerticle() {
+      HttpClient client;
       @Override
       public void start(Promise<Void> startPromise) {
-        HttpClient client = vertx.createHttpClient(createBaseClientOptions().setMaxPoolSize(1));
+        client = vertx.createHttpClient(createBaseClientOptions().setMaxPoolSize(1));
         for (int i = 0; i < numReq; i++) {
           client.request(requestOptions).
             compose(req -> req
@@ -6712,8 +6716,9 @@ public abstract class HttpTest extends HttpTestBase {
     );
     startServer(testAddress);
     client.request(requestOptions)
-      .compose(HttpClientRequest::send)
-      .compose(HttpClientResponse::end)
+      .compose(req -> req.send()
+        .andThen(onSuccess(resp -> assertEquals(200, resp.statusCode())))
+        .compose(HttpClientResponse::end))
       .onComplete(onSuccess(nothing -> complete()));
     await();
   }

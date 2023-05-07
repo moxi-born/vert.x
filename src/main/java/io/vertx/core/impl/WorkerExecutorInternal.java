@@ -17,7 +17,7 @@ import io.vertx.core.WorkerExecutor;
 /**
  * @author Thomas Segismont
  */
-public interface WorkerExecutorInternal extends WorkerExecutor, Closeable {
+public interface WorkerExecutorInternal extends WorkerExecutor {
   Vertx vertx();
 
   WorkerPool getPool();
