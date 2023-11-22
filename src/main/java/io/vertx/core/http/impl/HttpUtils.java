@@ -31,6 +31,7 @@ import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.StreamPriority;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.VertxInternal;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.spi.tracing.TagExtractor;
 
 import java.io.File;
@@ -507,9 +508,15 @@ public final class HttpUtils {
     if (scheme != null && (scheme.equals("http") || scheme.equals("https"))) {
       absoluteURI = uri.toString();
     } else {
-      String host = req.host();
-      if (host != null) {
-        absoluteURI = req.scheme() + "://" + host + uri;
+      boolean ssl = req.isSSL();
+      HostAndPort authority = req.authority();
+      if (authority != null) {
+        StringBuilder sb = new StringBuilder(req.scheme()).append("://").append(authority.host());
+        if (authority.port() > 0 && (ssl && authority.port() != 443) || (!ssl && authority.port() != 80)) {
+          sb.append(':').append(authority.port());
+        }
+        sb.append(uri);
+        absoluteURI = sb.toString();
       } else {
         // Fall back to the server origin
         absoluteURI = serverOrigin + uri;
@@ -952,4 +959,11 @@ public final class HttpUtils {
   static boolean isConnectOrUpgrade(io.vertx.core.http.HttpMethod method, MultiMap headers) {
     return method == io.vertx.core.http.HttpMethod.CONNECT || (method == io.vertx.core.http.HttpMethod.GET && headers.contains(io.vertx.core.http.HttpHeaders.CONNECTION, io.vertx.core.http.HttpHeaders.UPGRADE, true));
   }
+
+  static boolean isKeepAlive(HttpRequest request) {
+    HttpVersion version = request.protocolVersion();
+    return (version == HttpVersion.HTTP_1_1 && !request.headers().contains(io.vertx.core.http.HttpHeaders.CONNECTION, io.vertx.core.http.HttpHeaders.CLOSE, true))
+      || (version == HttpVersion.HTTP_1_0 && request.headers().contains(io.vertx.core.http.HttpHeaders.CONNECTION, io.vertx.core.http.HttpHeaders.KEEP_ALIVE, true));
+  }
+
 }

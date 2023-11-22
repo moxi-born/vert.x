@@ -27,9 +27,11 @@ import io.vertx.core.spi.observability.HttpRequest;
 import io.vertx.core.spi.observability.HttpResponse;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.core.VertxTestBase;
+import junit.framework.AssertionFailedError;
 import org.junit.Test;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -50,7 +52,10 @@ public class MetricsContextTest extends VertxTestBase {
       metricsContext.set(Vertx.currentContext());
       return DummyVertxMetrics.INSTANCE;
     };
-    vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     assertNull(metricsContext.get());
   }
 
@@ -64,14 +69,19 @@ public class MetricsContextTest extends VertxTestBase {
       metricsContext.set(Vertx.currentContext());
       return DummyVertxMetrics.INSTANCE;
     };
-    VertxOptions options = new VertxOptions()
-      .setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory))
-      .setEventBusOptions(new EventBusOptions());
-    clusteredVertx(options, onSuccess(vertx -> {
-      assertSame(testThread, metricsThread.get());
-      assertNull(metricsContext.get());
-      testComplete();
-    }));
+    VertxBuilder builder = Vertx.builder().with(new VertxOptions()
+        .setMetricsOptions(new MetricsOptions().setEnabled(true))
+        .setEventBusOptions(new EventBusOptions()))
+      .withClusterManager(getClusterManager())
+      .withMetrics(factory);
+    builder
+      .buildClustered()
+      .onComplete(onSuccess(vertx -> {
+        assertSame(testThread, metricsThread.get());
+        assertNull(metricsContext.get());
+        vertx.close();
+        testComplete();
+      }));
     await();
   }
 
@@ -134,13 +144,16 @@ public class MetricsContextTest extends VertxTestBase {
       }
     };
     CountDownLatch latch = new CountDownLatch(1);
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     Context ctx = contextFactory.apply(vertx);
     ctx.runOnContext(v1 -> {
       HttpServer server = vertx.createHttpServer().requestHandler(req -> {
         HttpServerResponse response = req.response();
         response.setStatusCode(200).setChunked(true).end("bye");
-        response.close();
+        req.connection().close();
       });
       server.listen(8080, "localhost").onComplete(onSuccess(s -> {
         expectedThread.set(Thread.currentThread());
@@ -149,21 +162,22 @@ public class MetricsContextTest extends VertxTestBase {
       }));
     });
     awaitLatch(latch);
-    HttpClient client = vertx.createHttpClient();
-    client.connectionHandler(conn -> {
-      conn.closeHandler(v -> {
-        vertx.close().onComplete(v4 -> {
-          assertTrue(requestBeginCalled.get());
-          assertTrue(responseEndCalled.get());
-          assertTrue(bytesReadCalled.get());
-          assertTrue(bytesWrittenCalled.get());
-          assertTrue(socketConnectedCalled.get());
-          assertTrue(socketDisconnectedCalled.get());
-          assertTrue(closeCalled.get());
-          complete();
+    HttpClient client = vertx.httpClientBuilder()
+      .withConnectHandler(conn -> {
+        conn.closeHandler(v -> {
+          vertx.close().onComplete(v4 -> {
+            assertTrue(requestBeginCalled.get());
+            assertTrue(responseEndCalled.get());
+            assertTrue(bytesReadCalled.get());
+            assertTrue(bytesWrittenCalled.get());
+            assertTrue(socketConnectedCalled.get());
+            assertTrue(socketDisconnectedCalled.get());
+            assertTrue(closeCalled.get());
+            complete();
+          });
         });
-      });
-    });
+      })
+      .build();
     client.request(HttpMethod.PUT, 8080, "localhost", "/")
       .compose(req -> req.send(Buffer.buffer("hello"))
         .onComplete(onSuccess(resp -> {
@@ -226,7 +240,10 @@ public class MetricsContextTest extends VertxTestBase {
       }
     };
     CountDownLatch latch = new CountDownLatch(1);
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     HttpServer server = vertx.createHttpServer().requestHandler(req -> {
       count.incrementAndGet();
       vertx.setTimer(10, id -> {
@@ -238,7 +255,7 @@ public class MetricsContextTest extends VertxTestBase {
       latch.countDown();
     }));
     awaitLatch(latch);
-    HttpClient client = vertx.createHttpClient(new HttpClientOptions().setPipelining(true).setMaxPoolSize(1));
+    HttpClient client = vertx.createHttpClient(new HttpClientOptions().setPipelining(true), new PoolOptions().setHttp1MaxSize(1));
     vertx.runOnContext(v -> {
       for (int i = 0;i < 2;i++) {
         client.request(HttpMethod.GET, 8080, "localhost", "/" + (i + 1)).onComplete(onSuccess(req -> {
@@ -329,7 +346,10 @@ public class MetricsContextTest extends VertxTestBase {
       }
     };
     CountDownLatch latch = new CountDownLatch(1);
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     Context ctx = contextFactory.apply(vertx);
     ctx.runOnContext(v1 -> {
       HttpServer server = vertx.createHttpServer().webSocketHandler(ws -> {
@@ -344,8 +364,8 @@ public class MetricsContextTest extends VertxTestBase {
       }));
     });
     awaitLatch(latch);
-    HttpClient client = vertx.createHttpClient();
-    client.webSocket(8080, "localhost", "/").onComplete(onSuccess(ws -> {
+    WebSocketClient client = vertx.createWebSocketClient();
+    client.connect(8080, "localhost", "/").onComplete(onSuccess(ws -> {
       ws.handler(buf -> {
         ws.closeHandler(v -> {
           vertx.close().onComplete(v4 -> {
@@ -428,13 +448,16 @@ public class MetricsContextTest extends VertxTestBase {
         };
       }
     };
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     HttpServer server = vertx.createHttpServer();
     server.requestHandler(req -> {
       req.endHandler(buf -> {
         HttpServerResponse resp = req.response();
         resp.setChunked(true).end(Buffer.buffer("bye"));
-        resp.close();
+        req.connection().close();
       });
     });
     awaitFuture(server.listen(8080, "localhost"));
@@ -525,7 +548,10 @@ public class MetricsContextTest extends VertxTestBase {
         };
       }
     };
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     HttpServer server = vertx.createHttpServer();
     server.webSocketHandler(ws -> {
       ws.handler(buf -> {
@@ -535,8 +561,8 @@ public class MetricsContextTest extends VertxTestBase {
     awaitFuture(server.listen(8080, "localhost"));
     Context ctx = contextFactory.apply(vertx);
     ctx.runOnContext(v1 -> {
-      HttpClient client = vertx.createHttpClient();
-      client.webSocket(8080, "localhost", "/").onComplete(onSuccess(ws -> {
+      WebSocketClient client = vertx.createWebSocketClient();
+      client.connect(8080, "localhost", "/").onComplete(onSuccess(ws -> {
         ws.handler(buf -> {
           ws.closeHandler(v2 -> {
             TestUtils.executeInVanillaVertxThread(() -> {
@@ -608,7 +634,10 @@ public class MetricsContextTest extends VertxTestBase {
       }
     };
     CountDownLatch latch = new CountDownLatch(1);
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     Context ctx = contextFactory.apply(vertx);
     ctx.runOnContext(v1 -> {
       NetServer server = vertx.createNetServer().connectHandler(so -> {
@@ -692,7 +721,10 @@ public class MetricsContextTest extends VertxTestBase {
         };
       }
     };
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     Context ctx = contextFactory.apply(vertx);
     NetServer server = vertx.createNetServer().connectHandler(so -> {
       so.handler(buf -> {
@@ -767,7 +799,10 @@ public class MetricsContextTest extends VertxTestBase {
         };
       }
     };
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     Context ctx = contextFactory.apply(vertx);
     ctx.runOnContext(v1 -> {
       expectedThread.set(Thread.currentThread());
@@ -800,7 +835,10 @@ public class MetricsContextTest extends VertxTestBase {
         };
       }
     };
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     vertx.eventBus();
     TestUtils.executeInVanillaVertxThread(() -> {
       vertx.close().onComplete(onSuccess(v -> {
@@ -826,13 +864,12 @@ public class MetricsContextTest extends VertxTestBase {
     AtomicReference<Thread> deliveredThread = new AtomicReference<>();
     AtomicBoolean registeredCalled = new AtomicBoolean();
     AtomicBoolean unregisteredCalled = new AtomicBoolean();
-    AtomicBoolean messageDelivered = new AtomicBoolean();
     VertxMetricsFactory factory = (options) -> new DummyVertxMetrics() {
       @Override
       public EventBusMetrics createEventBusMetrics() {
         return new DummyEventBusMetrics() {
           @Override
-          public Void handlerRegistered(String address, String repliedAddress) {
+          public Void handlerRegistered(String address) {
             registeredCalled.set(true);
             return null;
           }
@@ -851,7 +888,10 @@ public class MetricsContextTest extends VertxTestBase {
         };
       }
     };
-    Vertx vertx = vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(factory)));
+    Vertx vertx = vertx(() -> Vertx.builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(factory)
+      .build());
     EventBus eb = vertx.eventBus();
     Thread t = new Thread(() -> {
       eb.send("the_address", "the_msg");
@@ -888,7 +928,7 @@ public class MetricsContextTest extends VertxTestBase {
         ctx.set(context);
         super.start();
       }
-    }, new DeploymentOptions().setWorker(true));
+    }, new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER));
     assertWaitUntil(() -> ctx.get() != null);
     return ctx.get();
   };

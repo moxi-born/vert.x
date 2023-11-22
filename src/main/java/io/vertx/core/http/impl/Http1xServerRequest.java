@@ -17,12 +17,12 @@ import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.multipart.Attribute;
 import io.netty.handler.codec.http.multipart.HttpPostRequestDecoder;
 import io.netty.handler.codec.http.multipart.InterfaceHttpData;
-import io.vertx.codegen.annotations.Nullable;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.http.*;
 import io.vertx.core.http.Cookie;
 import io.vertx.core.http.HttpVersion;
@@ -32,6 +32,8 @@ import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.net.HostAndPort;
+import io.vertx.core.net.impl.HostAndPortImpl;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.spi.metrics.HttpServerMetrics;
@@ -71,6 +73,7 @@ public class Http1xServerRequest extends HttpServerRequestInternal implements io
   private HttpRequest request;
   private io.vertx.core.http.HttpVersion version;
   private io.vertx.core.http.HttpMethod method;
+  private HostAndPort authority;
   private String uri;
   private String path;
   private String query;
@@ -152,11 +155,11 @@ public class Http1xServerRequest extends HttpServerRequestInternal implements io
     }
   }
 
-  void handleBegin(boolean writable) {
+  void handleBegin(boolean keepAlive) {
     if (METRICS_ENABLED) {
       reportRequestBegin();
     }
-    response = new Http1xServerResponse((VertxInternal) conn.vertx(), context, conn, request, metric, writable);
+    response = new Http1xServerResponse((VertxInternal) conn.vertx(), context, conn, request, metric, keepAlive);
     if (conn.handle100ContinueAutomatically) {
       check100();
     }
@@ -184,7 +187,7 @@ public class Http1xServerRequest extends HttpServerRequestInternal implements io
 
   private void check100() {
     if (HttpUtil.is100ContinueExpected(request)) {
-      conn.write100Continue();
+      conn.write100Continue(null);
     }
   }
 
@@ -252,8 +255,14 @@ public class Http1xServerRequest extends HttpServerRequestInternal implements io
   }
 
   @Override
-  public @Nullable String host() {
-    return getHeader(HttpHeaderNames.HOST);
+  public synchronized HostAndPort authority() {
+    if (authority == null) {
+      String host = getHeader(HttpHeaderNames.HOST);
+      if (host != null) {
+        authority = HostAndPortImpl.parseHostAndPort(host, -1);
+      }
+    }
+    return authority;
   }
 
   @Override
@@ -384,7 +393,7 @@ public class Http1xServerRequest extends HttpServerRequestInternal implements io
 
   @Override
   public SocketAddress remoteAddress() {
-    return conn.remoteAddress();
+    return super.remoteAddress();
   }
 
   @Override
@@ -439,7 +448,7 @@ public class Http1xServerRequest extends HttpServerRequestInternal implements io
    * Handle the request when a WebSocket upgrade header is present.
    */
   private void webSocket(PromiseInternal<ServerWebSocket> promise) {
-    Buffer body = Buffer.buffer();
+    BufferInternal body = BufferInternal.buffer();
     boolean[] failed = new boolean[1];
     handler(buff -> {
       if (!failed[0]) {
@@ -448,7 +457,7 @@ public class Http1xServerRequest extends HttpServerRequestInternal implements io
           failed[0] = true;
           // Request Entity Too Large
           response.setStatusCode(413).end();
-          response.close();
+          conn.close();
         }
       }
     });
@@ -540,7 +549,7 @@ public class Http1xServerRequest extends HttpServerRequestInternal implements io
       bytesRead += data.length();
       if (decoder != null) {
         try {
-          decoder.offer(new DefaultHttpContent(data.getByteBuf()));
+          decoder.offer(new DefaultHttpContent(((BufferInternal)data).getByteBuf()));
         } catch (HttpPostRequestDecoder.ErrorDataDecoderException e) {
           handleException(e);
         }

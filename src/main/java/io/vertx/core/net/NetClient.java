@@ -11,11 +11,11 @@
 
 package io.vertx.core.net;
 
+import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.codegen.annotations.VertxGen;
+import io.vertx.core.Handler;
 import io.vertx.core.metrics.Measured;
-
-import java.util.concurrent.TimeUnit;
 
 /**
  * A TCP client.
@@ -77,6 +77,16 @@ public interface NetClient extends Measured {
   Future<NetSocket> connect(SocketAddress remoteAddress, String serverName);
 
   /**
+   * Open a connection to a server at the specific {@code connectOptions}.
+   * <p>
+   * The connect is done asynchronously and on success, a {@link NetSocket} instance is supplied via the {@code connectHandler} instance
+   *
+   * @param connectOptions the options describing how to connect to the remote server
+   * @return a future notified when the socket is connected
+   */
+  Future<NetSocket> connect(ConnectOptions connectOptions);
+
+  /**
    * Close the client.
    * <p>
    * Any sockets which have not been closed manually will be closed here. The close is asynchronous and may not
@@ -86,13 +96,31 @@ public interface NetClient extends Measured {
   Future<Void> close();
 
   /**
-   * Update the client SSL options.
+   * <p>Update the client with new SSL {@code options}, the update happens if the options object is valid and different
+   * from the existing options object.
    *
-   * Update only happens if the SSL options is valid.
+   * <p>The boolean succeeded future result indicates whether the update occurred.
    *
    * @param options the new SSL options
    * @return a future signaling the update success
    */
-  Future<Void> updateSSLOptions(SSLOptions options);
+  default Future<Boolean> updateSSLOptions(ClientSSLOptions options) {
+    return updateSSLOptions(options, false);
+  }
 
+  /**
+   * <p>Update the client with new SSL {@code options}, the update happens if the options object is valid and different
+   * from the existing options object.
+   *
+   * <p>The {@code options} object is compared using its {@code equals} method against the existing options to prevent
+   * an update when the objects are equals since loading options can be costly, this can happen for share TCP servers.
+   * When object are equals, setting {@code force} to {@code true} forces the update.
+   *
+   * <p>The boolean succeeded future result indicates whether the update occurred.
+   *
+   * @param options the new SSL options
+   * @param force force the update when options are equals
+   * @return a future signaling the update success
+   */
+  Future<Boolean> updateSSLOptions(ClientSSLOptions options, boolean force);
 }

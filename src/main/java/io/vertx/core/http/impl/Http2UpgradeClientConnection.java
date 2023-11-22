@@ -25,11 +25,11 @@ import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
 import io.vertx.core.http.HttpVersion;
-import io.vertx.core.impl.EventLoopContext;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.streams.WriteStream;
 
@@ -51,7 +51,7 @@ public class Http2UpgradeClientConnection implements HttpClientConnection {
 
   private static final Logger log = LoggerFactory.getLogger(Http2UpgradeClientConnection.class);
 
-  private HttpClientImpl client;
+  private HttpClientBase client;
   private HttpClientConnection current;
   private boolean upgradeProcessed;
 
@@ -64,7 +64,7 @@ public class Http2UpgradeClientConnection implements HttpClientConnection {
   private Handler<Long> concurrencyChangeHandler;
   private Handler<Http2Settings> remoteSettingsHandler;
 
-  Http2UpgradeClientConnection(HttpClientImpl client, Http1xClientConnection connection) {
+  Http2UpgradeClientConnection(HttpClientBase client, Http1xClientConnection connection) {
     this.client = client;
     this.current = connection;
   }
@@ -74,8 +74,18 @@ public class Http2UpgradeClientConnection implements HttpClientConnection {
   }
 
   @Override
+  public HostAndPort authority() {
+    return current.authority();
+  }
+
+  @Override
   public long concurrency() {
     return upgradeProcessed ? current.concurrency() : 1L;
+  }
+
+  @Override
+  public long activeStreams() {
+    return current.concurrency();
   }
 
   @Override
@@ -154,8 +164,8 @@ public class Http2UpgradeClientConnection implements HttpClientConnection {
     }
 
     @Override
-    public void writeFrame(int type, int flags, ByteBuf payload) {
-      delegate.writeFrame(type, flags, payload);
+    public Future<Void> writeFrame(int type, int flags, ByteBuf payload) {
+      return delegate.writeFrame(type, flags, payload);
     }
 
     @Override
@@ -348,7 +358,7 @@ public class Http2UpgradeClientConnection implements HttpClientConnection {
         public void upgradeTo(ChannelHandlerContext ctx, FullHttpResponse upgradeResponse) throws Exception {
 
           // Now we need to upgrade this to an HTTP2
-          VertxHttp2ConnectionHandler<Http2ClientConnection> handler = Http2ClientConnection.createHttp2ConnectionHandler(upgradedConnection.client, upgradingConnection.metrics, (EventLoopContext) upgradingConnection.getContext(), true, upgradedConnection.current.metric());
+          VertxHttp2ConnectionHandler<Http2ClientConnection> handler = Http2ClientConnection.createHttp2ConnectionHandler(upgradedConnection.client, upgradingConnection.metrics, upgradingConnection.getContext(), true, upgradedConnection.current.metric(), upgradedConnection.current.authority());
           upgradingConnection.channel().pipeline().addLast(handler);
           handler.connectFuture().addListener(future -> {
             if (!future.isSuccess()) {
@@ -699,11 +709,11 @@ public class Http2UpgradeClientConnection implements HttpClientConnection {
     }
 
     @Override
-    public void writeFrame(int type, int flags, ByteBuf payload) {
+    public Future<Void> writeFrame(int type, int flags, ByteBuf payload) {
       if (upgradedStream != null) {
-        upgradedStream.writeFrame(type, flags, payload);
+        return upgradedStream.writeFrame(type, flags, payload);
       } else {
-        upgradingStream.writeFrame(type, flags, payload);
+        return upgradingStream.writeFrame(type, flags, payload);
       }
     }
 
@@ -782,6 +792,11 @@ public class Http2UpgradeClientConnection implements HttpClientConnection {
         .createStream(context)
         .map(stream -> new DelegatingStream(this, stream));
     }
+  }
+
+  @Override
+  public Future<HttpClientRequest> createRequest(ContextInternal context) {
+    return ((HttpClientImpl)client).createRequest(this, context);
   }
 
   @Override

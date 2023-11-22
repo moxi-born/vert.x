@@ -11,13 +11,8 @@
 
 package io.vertx.core.eventbus;
 
-import io.vertx.core.Handler;
-import io.vertx.core.MultiMap;
-import io.vertx.core.Promise;
-import io.vertx.core.Vertx;
-import io.vertx.core.VertxOptions;
+import io.vertx.core.*;
 import io.vertx.core.impl.VertxInternal;
-import io.vertx.core.shareddata.AsyncMapTest.SomeClusterSerializableImplObject;
 import io.vertx.core.shareddata.AsyncMapTest.SomeClusterSerializableObject;
 import io.vertx.core.shareddata.AsyncMapTest.SomeSerializableObject;
 import io.vertx.core.spi.cluster.NodeSelector;
@@ -400,7 +395,7 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
   @Test
   public void testSendWriteHandler() throws Exception {
     CountDownLatch updateLatch = new CountDownLatch(3);
-    Supplier<VertxOptions> options = () -> getOptions().setClusterManager(new WrappedClusterManager(getClusterManager()) {
+    startNodes(2, () -> new WrappedClusterManager(getClusterManager()) {
       @Override
       public void init(Vertx vertx, NodeSelector nodeSelector) {
         super.init(vertx, new WrappedNodeSelector(nodeSelector) {
@@ -419,7 +414,6 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
         });
       }
     });
-    startNodes(options.get(), options.get());
     waitFor(2);
     vertices[1]
       .eventBus()
@@ -492,16 +486,15 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
   }
 
   @Test
-  public void testSelectorWantsUpdates() throws Exception {
+  public void testSelectorWantsUpdates() {
     AtomicReference<NodeSelector> nodeSelectorRef = new AtomicReference<>();
-    VertxOptions options = getOptions().setClusterManager(new WrappedClusterManager(getClusterManager()) {
+    startNodes(1, () -> new WrappedClusterManager(getClusterManager()) {
       @Override
       public void init(Vertx vertx, NodeSelector nodeSelector) {
         nodeSelectorRef.set(nodeSelector);
         super.init(vertx, nodeSelector);
       }
     });
-    startNodes(options);
     assertNotNull(nodeSelectorRef.get());
     vertices[0].eventBus().consumer(ADDRESS1, msg -> {
       assertTrue(nodeSelectorRef.get().wantsUpdatesFor(ADDRESS1));
@@ -511,18 +504,32 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
   }
 
   @Test
-  public void testSelectorDoesNotWantUpdates() throws Exception {
+  public void testSelectorDoesNotWantUpdates() {
     AtomicReference<NodeSelector> nodeSelectorRef = new AtomicReference<>();
-    VertxOptions options = getOptions().setClusterManager(new WrappedClusterManager(getClusterManager()) {
+    startNodes(1, () -> new WrappedClusterManager(getClusterManager()) {
       @Override
       public void init(Vertx vertx, NodeSelector nodeSelector) {
         nodeSelectorRef.set(nodeSelector);
         super.init(vertx, nodeSelector);
       }
     });
-    startNodes(options);
     assertNotNull(nodeSelectorRef.get());
     assertFalse(nodeSelectorRef.get().wantsUpdatesFor(ADDRESS1));
+  }
+
+  @Test
+  public void testPublisherCanReceiveNoHandlersFailure() {
+    startNodes(2);
+    vertices[0].eventBus().publisher("foo").write("bar").onComplete(onFailure(t -> {
+      if (t instanceof ReplyException) {
+        ReplyException replyException = (ReplyException) t;
+        assertEquals(ReplyFailure.NO_HANDLERS, replyException.failureType());
+        testComplete();
+      } else {
+        fail();
+      }
+    }));
+    await();
   }
 
   @Test
@@ -597,11 +604,6 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
   }
 
   @Test
-  public void testRejectedClusterSerializableImplNotSent() {
-    testRejectedNotSent(SomeClusterSerializableImplObject.class, new SomeClusterSerializableImplObject("bar"));
-  }
-
-  @Test
   public void testRejectedSerializableNotSent() {
     testRejectedNotSent(SomeSerializableObject.class, new SomeSerializableObject("bar"));
   }
@@ -626,11 +628,6 @@ public class ClusteredEventBusTest extends ClusteredEventBusTestBase {
   @Test
   public void testRejectedClusterSerializableNotReceived() {
     testRejectedNotReceived(SomeClusterSerializableObject.class, new SomeClusterSerializableObject("bar"));
-  }
-
-  @Test
-  public void testRejectedClusterSerializableImplNotReceived() {
-    testRejectedNotReceived(SomeClusterSerializableImplObject.class, new SomeClusterSerializableImplObject("bar"));
   }
 
   @Test

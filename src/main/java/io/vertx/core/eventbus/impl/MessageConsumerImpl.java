@@ -35,10 +35,6 @@ public class MessageConsumerImpl<T> extends HandlerRegistration<T> implements Me
 
   private static final int DEFAULT_MAX_BUFFERED_MESSAGES = 1000;
 
-  private final Vertx vertx;
-  private final ContextInternal context;
-  private final EventBusImpl eventBus;
-  private final String address;
   private final boolean localOnly;
   private Handler<Message<T>> handler;
   private Handler<Void> endHandler;
@@ -49,12 +45,8 @@ public class MessageConsumerImpl<T> extends HandlerRegistration<T> implements Me
   private Promise<Void> result;
   private boolean registered;
 
-  MessageConsumerImpl(Vertx vertx, ContextInternal context, EventBusImpl eventBus, String address, boolean localOnly) {
+  MessageConsumerImpl(ContextInternal context, EventBusImpl eventBus, String address, boolean localOnly) {
     super(context, eventBus, address, false);
-    this.vertx = vertx;
-    this.context = context;
-    this.eventBus = eventBus;
-    this.address = address;
     this.localOnly = localOnly;
     this.result = context.promise();
   }
@@ -94,11 +86,6 @@ public class MessageConsumerImpl<T> extends HandlerRegistration<T> implements Me
   }
 
   @Override
-  public String address() {
-    return address;
-  }
-
-  @Override
   public synchronized Future<Void> completion() {
     return result.future();
   }
@@ -112,7 +99,7 @@ public class MessageConsumerImpl<T> extends HandlerRegistration<T> implements Me
     if (pending.size() > 0) {
       Queue<Message<T>> discarded = pending;
       Handler<Message<T>> handler = discardHandler;
-      pending = new ArrayDeque<>();
+      pending = new ArrayDeque<>(8);
       for (Message<T> msg : discarded) {
         discard(msg);
         if (handler != null) {
@@ -216,7 +203,7 @@ public class MessageConsumerImpl<T> extends HandlerRegistration<T> implements Me
           registered = true;
           Promise<Void> p = result;
           Promise<Void> registration = context.promise();
-          register(null, localOnly, registration);
+          register(true, localOnly, registration);
           registration.future().onComplete(ar -> {
             if (ar.succeeded()) {
               p.tryComplete();
@@ -267,7 +254,7 @@ public class MessageConsumerImpl<T> extends HandlerRegistration<T> implements Me
   public synchronized MessageConsumer<T> endHandler(Handler<Void> endHandler) {
     if (endHandler != null) {
       // We should use the HandlerHolder context to properly do this (needs small refactoring)
-      Context endCtx = vertx.getOrCreateContext();
+      Context endCtx = context.owner().getOrCreateContext();
       this.endHandler = v1 -> endCtx.runOnContext(v2 -> endHandler.handle(null));
     } else {
       this.endHandler = null;

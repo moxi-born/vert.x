@@ -12,14 +12,14 @@
 package io.vertx.core.http.impl;
 
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
-import io.vertx.core.net.SocketAddress;
+
+import java.util.function.Function;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -31,14 +31,10 @@ class HttpClientRequestPushPromise extends HttpClientRequestBase {
 
   public HttpClientRequestPushPromise(
     HttpClientStream stream,
-    HttpClientImpl client,
-    boolean ssl,
     HttpMethod method,
     String uri,
-    String host,
-    int port,
     MultiMap headers) {
-    super(client, stream, stream.connection().getContext().promise(), ssl, method, SocketAddress.inetSocketAddress(port, host), host, port, uri);
+    super(stream, stream.connection().getContext().promise(), method, uri);
     this.stream = stream;
     this.headers = headers;
   }
@@ -61,12 +57,6 @@ class HttpClientRequestPushPromise extends HttpClientRequestBase {
   @Override
   public HttpConnection connection() {
     return stream.connection();
-  }
-
-  @Override
-  boolean reset(Throwable cause) {
-    stream.reset(cause);
-    return true;
   }
 
   @Override
@@ -100,7 +90,27 @@ class HttpClientRequestPushPromise extends HttpClientRequestBase {
   }
 
   @Override
+  public boolean isFollowRedirects() {
+    return false;
+  }
+
+  @Override
   public HttpClientRequest setMaxRedirects(int maxRedirects) {
+    throw new IllegalStateException();
+  }
+
+  @Override
+  public int getMaxRedirects() {
+    return 0;
+  }
+
+  @Override
+  public int numberOfRedirections() {
+    return 0;
+  }
+
+  @Override
+  public HttpClientRequest redirectHandler(@Nullable Function<HttpClientResponse, Future<HttpClientRequest>> handler) {
     throw new IllegalStateException();
   }
 
@@ -126,6 +136,16 @@ class HttpClientRequestPushPromise extends HttpClientRequestBase {
 
   @Override
   public HttpClientRequest putHeader(CharSequence name, Iterable<CharSequence> values) {
+    throw new IllegalStateException();
+  }
+
+  @Override
+  public HttpClientRequest traceOperation(String op) {
+    throw new IllegalStateException();
+  }
+
+  @Override
+  public String traceOperation() {
     throw new IllegalStateException();
   }
 
@@ -190,7 +210,7 @@ class HttpClientRequestPushPromise extends HttpClientRequestBase {
   }
 
   @Override
-  public HttpClientRequest writeCustomFrame(int type, int flags, Buffer payload) {
+  public Future<Void> writeCustomFrame(int type, int flags, Buffer payload) {
     throw new UnsupportedOperationException("Cannot write frame with HTTP/1.x ");
   }
 }

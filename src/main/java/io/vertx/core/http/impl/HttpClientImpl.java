@@ -15,49 +15,25 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
-import io.vertx.core.http.HttpClient;
-import io.vertx.core.http.HttpClientOptions;
-import io.vertx.core.http.HttpClientRequest;
-import io.vertx.core.http.HttpClientResponse;
-import io.vertx.core.http.HttpConnection;
-import io.vertx.core.http.HttpHeaders;
-import io.vertx.core.http.HttpMethod;
-import io.vertx.core.http.HttpVersion;
-import io.vertx.core.http.RequestOptions;
-import io.vertx.core.http.WebSocket;
-import io.vertx.core.http.WebSocketConnectOptions;
-import io.vertx.core.http.WebsocketVersion;
+import io.vertx.core.http.*;
 import io.vertx.core.impl.*;
-import io.vertx.core.impl.future.PromiseInternal;
+import io.vertx.core.loadbalancing.LoadBalancer;
 import io.vertx.core.net.*;
-import io.vertx.core.net.impl.NetClientBuilder;
-import io.vertx.core.net.impl.NetClientInternal;
-import io.vertx.core.net.impl.ProxyFilter;
-import io.vertx.core.net.impl.pool.ConnectionManager;
-import io.vertx.core.net.impl.pool.ConnectionPool;
-import io.vertx.core.net.impl.pool.Endpoint;
-import io.vertx.core.net.impl.pool.EndpointProvider;
-import io.vertx.core.net.impl.pool.Lease;
+import io.vertx.core.net.impl.endpoint.EndpointManager;
+import io.vertx.core.net.impl.endpoint.EndpointProvider;
+import io.vertx.core.net.impl.pool.*;
+import io.vertx.core.net.impl.resolver.EndpointRequest;
+import io.vertx.core.net.impl.resolver.EndpointResolverManager;
+import io.vertx.core.net.impl.resolver.EndpointLookup;
 import io.vertx.core.spi.metrics.ClientMetrics;
-import io.vertx.core.spi.metrics.HttpClientMetrics;
-import io.vertx.core.spi.metrics.Metrics;
 import io.vertx.core.spi.metrics.MetricsProvider;
 
 import java.lang.ref.WeakReference;
 import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import static io.vertx.core.http.HttpHeaders.*;
 
@@ -66,7 +42,7 @@ import static io.vertx.core.http.HttpHeaders.*;
  *
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
-public class HttpClientImpl implements HttpClientInternal, MetricsProvider {
+public class HttpClientImpl extends HttpClientBase implements HttpClientInternal, MetricsProvider {
 
   // Pattern to check we are not dealing with an absoluate URI
   private static final Pattern ABS_URI_START_PATTERN = Pattern.compile("^\\p{Alpha}[\\p{Alpha}\\p{Digit}+.\\-]*:");
@@ -124,67 +100,32 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider {
     }
   };
 
-  private static final Consumer<Endpoint<Lease<HttpClientConnection>>> EXPIRED_CHECKER = endpoint -> ((ClientHttpEndpointBase)endpoint).checkExpired();
-
-
-  private final VertxInternal vertx;
-  private final HttpClientOptions options;
-  private final ConnectionManager<EndpointKey, HttpClientConnection> webSocketCM;
-  private final ConnectionManager<EndpointKey, Lease<HttpClientConnection>> httpCM;
-  private final NetClientInternal netClient;
-  private final HttpClientMetrics metrics;
-  private final boolean keepAlive;
-  private final boolean pipelining;
-  private final CloseSequence closeSequence;
-  private long closeTimeout = 0L;
-  private TimeUnit closeTimeoutUnit = TimeUnit.SECONDS;
-  private long timerID;
-  private Predicate<SocketAddress> proxyFilter;
-  private volatile Handler<HttpConnection> connectionHandler;
+  private final PoolOptions poolOptions;
+  private final EndpointManager<EndpointKey, SharedClientHttpStreamEndpoint> httpCM;
+  private final EndpointResolverManager<?, ?, ?> endpointResolverManager;
   private volatile Function<HttpClientResponse, Future<RequestOptions>> redirectHandler = DEFAULT_HANDLER;
-  private final Function<ContextInternal, EventLoopContext> contextProvider;
+  private long timerID;
+  private volatile Handler<HttpConnection> connectionHandler;
+  private final Function<ContextInternal, ContextInternal> contextProvider;
 
-  public HttpClientImpl(VertxInternal vertx, HttpClientOptions options) {
-    this.vertx = vertx;
-    this.metrics = vertx.metricsSPI() != null ? vertx.metricsSPI().createHttpClientMetrics(options) : null;
-    this.options = new HttpClientOptions(options);
-    this.closeSequence = new CloseSequence(this::doClose, this::doShutdown);
-    List<HttpVersion> alpnVersions = options.getAlpnVersions();
-    if (alpnVersions == null || alpnVersions.isEmpty()) {
-      switch (options.getProtocolVersion()) {
-        case HTTP_2:
-          alpnVersions = Arrays.asList(HttpVersion.HTTP_2, HttpVersion.HTTP_1_1);
-          break;
-        default:
-          alpnVersions = Collections.singletonList(options.getProtocolVersion());
-          break;
-      }
+  public HttpClientImpl(VertxInternal vertx, io.vertx.core.net.AddressResolver addressResolver, LoadBalancer loadBalancer, HttpClientOptions options, PoolOptions poolOptions) {
+    super(vertx, options);
+    if (addressResolver != null) {
+      this.endpointResolverManager = new EndpointResolverManager<>(addressResolver.resolver(vertx), loadBalancer, options.getKeepAliveTimeout() * 1000);
+    } else {
+      this.endpointResolverManager = null;
     }
-    this.keepAlive = options.isKeepAlive();
-    this.pipelining = options.isPipelining();
-    if (!keepAlive && pipelining) {
-      throw new IllegalStateException("Cannot have pipelining with no keep alive");
-    }
-    this.proxyFilter = options.getNonProxyHosts() != null ? ProxyFilter.nonProxyHosts(options.getNonProxyHosts()) : ProxyFilter.DEFAULT_PROXY_FILTER;
-    this.netClient = new NetClientBuilder(vertx, new NetClientOptions(options)
-      .setHostnameVerificationAlgorithm(options.isVerifyHost() ? "HTTPS": "")
-      .setProxyOptions(null)
-      .setApplicationLayerProtocols(alpnVersions
-        .stream()
-        .map(HttpVersion::alpnName)
-        .collect(Collectors.toList())))
-      .metrics(metrics)
-      .build();
-    webSocketCM = webSocketConnectionManager();
-    httpCM = httpConnectionManager();
-    if (options.getPoolCleanerPeriod() > 0 && (options.getKeepAliveTimeout() > 0L || options.getHttp2KeepAliveTimeout() > 0L)) {
+
+    this.poolOptions = poolOptions;
+    httpCM = new EndpointManager<>();
+    if (poolOptions.getCleanerPeriod() > 0 && (options.getKeepAliveTimeout() > 0L || options.getHttp2KeepAliveTimeout() > 0L)) {
       PoolChecker checker = new PoolChecker(this);
       ContextInternal timerContext = vertx.createEventLoopContext();
-      timerID = timerContext.setTimer(options.getPoolCleanerPeriod(), checker);
+      timerID = timerContext.setTimer(poolOptions.getCleanerPeriod(), checker);
     }
-    int eventLoopSize = options.getPoolEventLoopSize();
+    int eventLoopSize = poolOptions.getEventLoopSize();
     if (eventLoopSize > 0) {
-      EventLoopContext[] eventLoops = new EventLoopContext[eventLoopSize];
+      ContextInternal[] eventLoops = new ContextInternal[eventLoopSize];
       for (int i = 0;i < eventLoopSize;i++) {
         eventLoops[i] = vertx.createEventLoopContext();
       }
@@ -198,18 +139,8 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider {
     }
   }
 
-  public NetClientInternal netClient() {
-    return netClient;
-  }
-
-  @Override
-  public Future<Void> closeFuture() {
-    return closeSequence.future();
-  }
-
-  @Override
-  public void close(Promise<Void> completion) {
-    closeSequence.close(completion);
+  Function<ContextInternal, ContextInternal> contextProvider() {
+    return contextProvider;
   }
 
   /**
@@ -232,245 +163,71 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider {
     }
   }
 
-  private void checkExpired(Handler<Long> checker) {
-    httpCM.forEach(EXPIRED_CHECKER);
+  protected void checkExpired(Handler<Long> checker) {
     synchronized (this) {
       if (!closeSequence.started()) {
-        timerID = vertx.setTimer(options.getPoolCleanerPeriod(), checker);
+        timerID = vertx.setTimer(poolOptions.getCleanerPeriod(), checker);
       }
     }
-  }
-
-  private ConnectionManager<EndpointKey, Lease<HttpClientConnection>> httpConnectionManager() {
-    return new ConnectionManager<>();
-  }
-
-  private ConnectionManager<EndpointKey, HttpClientConnection> webSocketConnectionManager() {
-    return new ConnectionManager<>();
-  }
-
-  Function<ContextInternal, EventLoopContext> contextProvider() {
-    return contextProvider;
-  }
-
-  private int getPort(RequestOptions request) {
-    Integer port = request.getPort();
-    if (port != null) {
-      return port;
+    httpCM.checkExpired();
+    if (endpointResolverManager != null) {
+      endpointResolverManager.checkExpired();
     }
-    SocketAddress server = request.getServer();
-    if (server != null && server.isInetSocket()) {
-      return server.port();
-    }
-    return options.getDefaultPort();
   }
 
-  private ProxyOptions getProxyOptions(ProxyOptions proxyOptions) {
-    if (proxyOptions == null) {
-      proxyOptions = options.getProxyOptions();
-    }
-    return proxyOptions;
-  }
-
-  private String getHost(RequestOptions request) {
-    String host = request.getHost();
-    if (host != null) {
-      return host;
-    }
-    SocketAddress server = request.getServer();
-    if (server != null && server.isInetSocket()) {
-      return server.host();
-    }
-    return options.getDefaultHost();
-  }
-
-  private ProxyOptions resolveProxyOptions(ProxyOptions proxyOptions, SocketAddress addr) {
-    proxyOptions = getProxyOptions(proxyOptions);
-    if (proxyFilter != null) {
-      if (!proxyFilter.test(addr)) {
+  private EndpointProvider<EndpointKey, SharedClientHttpStreamEndpoint> httpEndpointProvider() {
+    return (key, dispose) -> {
+      int maxPoolSize = Math.max(poolOptions.getHttp1MaxSize(), poolOptions.getHttp2MaxSize());
+      ClientMetrics metrics = HttpClientImpl.this.metrics != null ? HttpClientImpl.this.metrics.createEndpointMetrics(key.server, maxPoolSize) : null;
+      ProxyOptions proxyOptions = key.proxyOptions;
+      if (proxyOptions != null && !key.ssl && proxyOptions.getType() == ProxyType.HTTP) {
+        SocketAddress server = SocketAddress.inetSocketAddress(proxyOptions.getPort(), proxyOptions.getHost());
+        key = new EndpointKey(key.ssl, key.sslOptions, proxyOptions, server, key.authority);
         proxyOptions = null;
       }
-    }
-    return proxyOptions;
-  }
-
-  HttpClientMetrics metrics() {
-    return metrics;
-  }
-
-  /**
-   * Connect to a server.
-   */
-  public Future<HttpClientConnection> connect(SocketAddress server) {
-    return connect(server, null);
-  }
-
-  /**
-   * Connect to a server.
-   */
-  public Future<HttpClientConnection> connect(SocketAddress server, SocketAddress peer) {
-    EventLoopContext context = (EventLoopContext) vertx.getOrCreateContext();
-    HttpChannelConnector connector = new HttpChannelConnector(this, netClient, null, null, options.getProtocolVersion(), options.isSsl(), options.isUseAlpn(), peer, server);
-    return connector.httpConnect(context);
-  }
-
-  private Future<WebSocket> webSocket(ContextInternal ctx, WebSocketConnectOptions connectOptions) {
-    int port = getPort(connectOptions);
-    String host = getHost(connectOptions);
-    SocketAddress addr = SocketAddress.inetSocketAddress(port, host);
-    ProxyOptions proxyOptions = resolveProxyOptions(connectOptions.getProxyOptions(), addr);
-    EndpointKey key = new EndpointKey(connectOptions.isSsl() != null ? connectOptions.isSsl() : options.isSsl(), proxyOptions, addr, addr);
-    EventLoopContext eventLoopContext;
-    if (ctx instanceof EventLoopContext) {
-      eventLoopContext = (EventLoopContext) ctx;
-    } else {
-      eventLoopContext = vertx.createEventLoopContext(ctx.nettyEventLoop(), ctx.workerPool(), ctx.classLoader());
-    }
-    EndpointProvider<HttpClientConnection> provider = new EndpointProvider<HttpClientConnection>() {
-      @Override
-      public Endpoint<HttpClientConnection> create(ContextInternal ctx, Runnable dispose) {
-        int maxPoolSize = options.getMaxWebSockets();
-        ClientMetrics metrics = HttpClientImpl.this.metrics != null ? HttpClientImpl.this.metrics.createEndpointMetrics(key.serverAddr, maxPoolSize) : null;
-        HttpChannelConnector connector = new HttpChannelConnector(HttpClientImpl.this, netClient, proxyOptions, metrics, HttpVersion.HTTP_1_1, key.ssl, false, key.peerAddr, key.serverAddr);
-        return new WebSocketEndpoint(null, maxPoolSize, connector, dispose);
-      }
+      HttpChannelConnector connector = new HttpChannelConnector(HttpClientImpl.this, netClient, key.sslOptions, proxyOptions, metrics, options.getProtocolVersion(), key.ssl, options.isUseAlpn(), key.authority, key.server);
+      return new SharedClientHttpStreamEndpoint(
+        HttpClientImpl.this,
+        metrics,
+        poolOptions.getMaxWaitQueueSize(),
+        poolOptions.getHttp1MaxSize(),
+        poolOptions.getHttp2MaxSize(),
+        connector,
+        dispose);
     };
-    // Work around for workers
-    return ctx
-      .succeededFuture()
-      .compose(v -> webSocketCM.getConnection(eventLoopContext, key, provider))
-      .compose(c -> {
-        Http1xClientConnection conn = (Http1xClientConnection) c;
-        return conn.toWebSocket(
-          ctx,
-          connectOptions.getURI(),
-          connectOptions.getHeaders(),
-          connectOptions.getAllowOriginHeader(),
-          connectOptions.getVersion(),
-          connectOptions.getSubProtocols(),
-          connectOptions.getTimeout(),
-          connectOptions.isRegisterWriteHandlers(),
-          HttpClientImpl.this.options.getMaxWebSocketFrameSize());
-      });
   }
 
   @Override
-  public Future<WebSocket> webSocket(int port, String host, String requestURI) {
-    return webSocket(new WebSocketConnectOptions().setURI(requestURI).setHost(host).setPort(port));
-  }
-
-  @Override
-  public Future<WebSocket> webSocket(String host, String requestURI) {
-    return webSocket(options.getDefaultPort(), host, requestURI);
-  }
-
-  @Override
-  public Future<WebSocket> webSocket(String requestURI) {
-    return webSocket(options.getDefaultPort(), options.getDefaultHost(), requestURI);
-  }
-
-  @Override
-  public Future<WebSocket> webSocket(WebSocketConnectOptions options) {
-    return webSocket(vertx.getOrCreateContext(), options);
-  }
-
-  @Override
-  public Future<WebSocket> webSocketAbs(String url, MultiMap headers, WebsocketVersion version, List<String> subProtocols) {
-    URI uri;
-    try {
-      uri = new URI(url);
-    } catch (URISyntaxException e) {
-      throw new IllegalArgumentException(e);
-    }
-    String scheme = uri.getScheme();
-    if (!"ws".equals(scheme) && !"wss".equals(scheme)) {
-      throw new IllegalArgumentException("Scheme: " + scheme);
-    }
-    boolean ssl = scheme.length() == 3;
-    int port = uri.getPort();
-    if (port == -1) port = ssl ? 443 : 80;
-    StringBuilder relativeUri = new StringBuilder();
-    if (uri.getRawPath() != null) {
-      relativeUri.append(uri.getRawPath());
-    }
-    if (uri.getRawQuery() != null) {
-      relativeUri.append('?').append(uri.getRawQuery());
-    }
-    if (uri.getRawFragment() != null) {
-      relativeUri.append('#').append(uri.getRawFragment());
-    }
-    WebSocketConnectOptions options = new WebSocketConnectOptions()
-      .setHost(uri.getHost())
-      .setPort(port).setSsl(ssl)
-      .setURI(relativeUri.toString())
-      .setHeaders(headers)
-      .setVersion(version)
-      .setSubProtocols(subProtocols);
-    return webSocket(options);
-  }
-
-  @Override
-  public Future<HttpClientRequest> request(RequestOptions options) {
-    return doRequest(options);
-  }
-
-  @Override
-  public Future<HttpClientRequest> request(HttpMethod method, int port, String host, String requestURI) {
-    return request(new RequestOptions().setMethod(method).setPort(port).setHost(host).setURI(requestURI));
-  }
-
-  @Override
-  public Future<HttpClientRequest> request(HttpMethod method, String host, String requestURI) {
-    return request(method, options.getDefaultPort(), host, requestURI);
-  }
-
-  @Override
-  public Future<HttpClientRequest> request(HttpMethod method, String requestURI) {
-    return request(method, options.getDefaultPort(), options.getDefaultHost(), requestURI);
-  }
-
-  private void doShutdown(Promise<Void> p) {
+  protected void doShutdown(Promise<Void> p) {
     synchronized (this) {
       if (timerID >= 0) {
         vertx.cancelTimer(timerID);
         timerID = -1;
       }
     }
+    httpCM.shutdown();
+    super.doShutdown(p);
+  }
+
+  @Override
+  protected void doClose(Promise<Void> p) {
     httpCM.close();
-    webSocketCM.close();
-    netClient.shutdown(closeTimeout, closeTimeoutUnit).onComplete(p);
+    super.doClose(p);
   }
 
-  private void doClose(Promise<Void> p) {
-    netClient.close().onComplete(p);
+  public void redirectHandler(Function<HttpClientResponse, Future<RequestOptions>> handler) {
+    if (handler == null) {
+      handler = DEFAULT_HANDLER;
+    }
+    redirectHandler = handler;
   }
 
-  @Override
-  public Future<Void> close(long timeout, TimeUnit timeUnit) {
-    this.closeTimeout = timeout;
-    this.closeTimeoutUnit = timeUnit;
-    return closeSequence.close();
+  public Function<HttpClientResponse, Future<RequestOptions>> redirectHandler() {
+    return redirectHandler;
   }
 
-  @Override
-  public boolean isMetricsEnabled() {
-    return getMetrics() != null;
-  }
-
-  @Override
-  public Metrics getMetrics() {
-    return metrics;
-  }
-
-  @Override
-  public Future<Void> updateSSLOptions(SSLOptions options) {
-    return netClient.updateSSLOptions(options);
-  }
-
-  @Override
-  public HttpClient connectionHandler(Handler<HttpConnection> handler) {
+  public void connectionHandler(Handler<HttpConnection> handler) {
     connectionHandler = handler;
-    return this;
   }
 
   Handler<HttpConnection> connectionHandler() {
@@ -478,49 +235,58 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider {
   }
 
   @Override
-  public HttpClient redirectHandler(Function<HttpClientResponse, Future<RequestOptions>> handler) {
-    if (handler == null) {
-      handler = DEFAULT_HANDLER;
+  public Future<HttpClientRequest> request(RequestOptions request) {
+    Address addr = request.getServer();
+    Integer port = request.getPort();
+    String host = request.getHost();
+    if (addr == null) {
+      if (port == null) {
+        port = options.getDefaultPort();
+      }
+      if (host == null) {
+        host = options.getDefaultHost();
+      }
+      addr = SocketAddress.inetSocketAddress(port, host);
+    } else if (addr instanceof SocketAddress) {
+      SocketAddress socketAddr = (SocketAddress) addr;
+      if (port == null) {
+        port = request.getPort();
+      }
+      if (host == null) {
+        host = request.getHost();
+      }
+      if (port == null) {
+        port = socketAddr.port();
+      }
+      if (host == null) {
+        host = socketAddr.host();
+      }
     }
-    redirectHandler = handler;
-    return this;
+    return doRequest(addr, port, host, request);
   }
 
-  @Override
-  public Function<HttpClientResponse, Future<RequestOptions>> redirectHandler() {
-    return redirectHandler;
-  }
-
-  public HttpClient proxyFilter(Predicate<SocketAddress> filter) {
-    proxyFilter = filter;
-    return this;
-  }
-
-  @Override
-  public HttpClientOptions options() {
-    return options;
-  }
-
-  @Override
-  public VertxInternal vertx() {
-    return vertx;
-  }
-
-  private Future<HttpClientRequest> doRequest(RequestOptions request) {
-    String host = getHost(request);
-    int port = getPort(request);
-    SocketAddress server = request.getServer();
+  private Future<HttpClientRequest> doRequest(Address server, Integer port, String host, RequestOptions request) {
     if (server == null) {
-      server = SocketAddress.inetSocketAddress(port, host);
+      throw new NullPointerException();
     }
     HttpMethod method = request.getMethod();
     String requestURI = request.getURI();
     Boolean ssl = request.isSsl();
     MultiMap headers = request.getHeaders();
-    long timeout = request.getTimeout();
+    long connectTimeout = 0L;
+    long idleTimeout = 0L;
+    if (request.getTimeout() >= 0L) {
+      connectTimeout = request.getTimeout();
+      idleTimeout = request.getTimeout();
+    }
+    if (request.getConnectTimeout() >= 0L) {
+      connectTimeout = request.getConnectTimeout();
+    }
+    if (request.getIdleTimeout() >= 0L) {
+      idleTimeout = request.getIdleTimeout();
+    }
     Boolean followRedirects = request.getFollowRedirects();
     Objects.requireNonNull(method, "no null method accepted");
-    Objects.requireNonNull(host, "no null host accepted");
     Objects.requireNonNull(requestURI, "no null requestURI accepted");
     boolean useAlpn = this.options.isUseAlpn();
     boolean useSSL = ssl != null ? ssl : this.options.isSsl();
@@ -528,99 +294,162 @@ public class HttpClientImpl implements HttpClientInternal, MetricsProvider {
       return vertx.getOrCreateContext().failedFuture("Must enable ALPN when using H2");
     }
     checkClosed();
-    ProxyOptions proxyOptions = resolveProxyOptions(request.getProxyOptions(), server);
-
-    String peerHost = host;
-    if (peerHost.endsWith(".")) {
-      peerHost = peerHost.substring(0, peerHost.length() -  1);
-    }
-    SocketAddress peerAddress = SocketAddress.inetSocketAddress(port, peerHost);
-
-    EndpointKey key;
-    if (proxyOptions != null && !useSSL && proxyOptions.getType() == ProxyType.HTTP) {
-      // If the requestURI is as not absolute URI then we do not recompute one for the proxy
-      if (!ABS_URI_START_PATTERN.matcher(requestURI).find()) {
-        int defaultPort = 80;
-        String addPort = (port != -1 && port != defaultPort) ? (":" + port) : "";
-        requestURI = (ssl == Boolean.TRUE ? "https://" : "http://") + host + addPort + requestURI;
+    HostAndPort authority;
+    // should we do that here ? it might create issues with address resolver that resolves this later
+    if (host != null && port != null) {
+      String peerHost = host;
+      if (peerHost.endsWith(".")) {
+        peerHost = peerHost.substring(0, peerHost.length() -  1);
       }
-      if (proxyOptions.getUsername() != null && proxyOptions.getPassword() != null) {
-        if (headers == null) {
-          headers = HttpHeaders.headers();
-        }
-        headers.add("Proxy-Authorization", "Basic " + Base64.getEncoder()
-          .encodeToString((proxyOptions.getUsername() + ":" + proxyOptions.getPassword()).getBytes()));
-      }
-      server = SocketAddress.inetSocketAddress(proxyOptions.getPort(), proxyOptions.getHost());
-      key = new EndpointKey(useSSL, proxyOptions, server, peerAddress);
-      proxyOptions = null;
+      authority = HostAndPort.create(peerHost, port);
     } else {
-      key = new EndpointKey(useSSL, proxyOptions, server, peerAddress);
+      authority = null;
     }
-    return doRequest(method, peerAddress, server, host, port, useSSL, requestURI, headers, request.getTraceOperation(), timeout, followRedirects, proxyOptions, key);
+    ClientSSLOptions sslOptions = sslOptions(request);
+    return doRequest(method, authority, server, useSSL, requestURI, headers, request.getTraceOperation(), connectTimeout, idleTimeout, followRedirects, sslOptions, request.getProxyOptions());
   }
 
   private Future<HttpClientRequest> doRequest(
     HttpMethod method,
-    SocketAddress peerAddress,
-    SocketAddress server,
-    String host,
-    int port,
+    HostAndPort authority,
+    Address server,
     Boolean useSSL,
     String requestURI,
     MultiMap headers,
     String traceOperation,
-    long timeout,
+    long connectTimeout,
+    long idleTimeout,
     Boolean followRedirects,
-    ProxyOptions proxyOptions,
-    EndpointKey key) {
+    ClientSSLOptions sslOptions,
+    ProxyOptions proxyConfig) {
     ContextInternal ctx = vertx.getOrCreateContext();
     ContextInternal connCtx = ctx.isEventLoopContext() ? ctx : vertx.createEventLoopContext(ctx.nettyEventLoop(), ctx.workerPool(), ctx.classLoader());
     Promise<HttpClientRequest> promise = ctx.promise();
-    EndpointProvider<Lease<HttpClientConnection>> provider = new EndpointProvider<Lease<HttpClientConnection>>() {
-      @Override
-      public Endpoint<Lease<HttpClientConnection>> create(ContextInternal ctx, Runnable dispose) {
-        int maxPoolSize = Math.max(options.getMaxPoolSize(), options.getHttp2MaxPoolSize());
-        ClientMetrics metrics = HttpClientImpl.this.metrics != null ? HttpClientImpl.this.metrics.createEndpointMetrics(key.serverAddr, maxPoolSize) : null;
-        HttpChannelConnector connector = new HttpChannelConnector(HttpClientImpl.this, netClient, proxyOptions, metrics, options.getProtocolVersion(), key.ssl, options.isUseAlpn(), key.peerAddr, key.serverAddr);
-        return new SharedClientHttpStreamEndpoint(
-          HttpClientImpl.this,
-          metrics,
-          options.getMaxWaitQueueSize(),
-          options.getMaxPoolSize(),
-          options.getHttp2MaxPoolSize(),
-          connector,
-          dispose);
-      }
-    };
-    httpCM
-      .getConnection(connCtx, key, provider, timeout)
-      .compose(lease -> {
-        HttpClientConnection conn = lease.get();
-        return conn.createStream(ctx).<HttpClientRequest>map(stream -> {
-          stream.closeHandler(v -> {
-            lease.recycle();
-          });
-          HttpClientRequestImpl req = new HttpClientRequestImpl(this, stream, ctx.promise(), useSSL, method, server, host, port, requestURI, traceOperation);
-          if (headers != null) {
-            req.headers().setAll(headers);
+    Future<HttpClientStream> future;
+    ProxyOptions proxyOptions;
+    if (endpointResolverManager != null && endpointResolverManager.accepts(server)) {
+      Future<EndpointLookup> fut = endpointResolverManager.lookupEndpoint(ctx, server);
+      future = fut.compose(lookup -> {
+        SocketAddress address = lookup.address();
+        EndpointKey key = new EndpointKey(useSSL, sslOptions, proxyConfig, address, authority != null ? authority : HostAndPort.create(address.host(), address.port()));
+        return httpCM.withEndpointAsync(key, httpEndpointProvider(), (endpoint, created) -> {
+          Future<Lease<HttpClientConnection>> fut2 = endpoint.requestConnection(connCtx, connectTimeout);
+          if (fut2 == null) {
+            return null;
+          } else {
+            EndpointRequest endpointRequest = lookup.initiateRequest();
+            return fut2.andThen(ar -> {
+              if (ar.failed()) {
+                endpointRequest.reportFailure(ar.cause());
+              }
+            }).compose(lease -> {
+              HttpClientConnection conn = lease.get();
+              return conn.createStream(ctx).map(stream -> {
+                HttpClientStream wrapped = new StatisticsGatheringHttpClientStream(stream, endpointRequest);
+                wrapped.closeHandler(v -> lease.recycle());
+                return wrapped;
+              });
+            });
           }
-          if (followRedirects != null) {
-            req.setFollowRedirects(followRedirects);
-          }
-          if (timeout > 0L) {
-            // Maybe later ?
-            req.setTimeout(timeout);
-          }
-          return req;
         });
+      });
+      if (future != null) {
+        proxyOptions = proxyConfig;
+      } else {
+        proxyOptions = null;
+      }
+    } else if (server instanceof SocketAddress) {
+      proxyOptions = computeProxyOptions(proxyConfig, (SocketAddress) server);
+      EndpointKey key = new EndpointKey(useSSL, sslOptions, proxyOptions, (SocketAddress) server, authority);
+      future = httpCM.withEndpointAsync(key, httpEndpointProvider(), (endpoint, created) -> {
+        Future<Lease<HttpClientConnection>> fut = endpoint.requestConnection(connCtx, connectTimeout);
+        if (fut == null) {
+          return null;
+        } else {
+          return fut.compose(lease -> {
+            HttpClientConnection conn = lease.get();
+            return conn.createStream(ctx).andThen(ar -> {
+              if (ar.succeeded()) {
+                HttpClientStream stream = ar.result();
+                stream.closeHandler(v -> {
+                  lease.recycle();
+                });
+              }
+            });
+          });
+        }
+      });
+    } else {
+      return ctx.failedFuture("Cannot resolve address " + server);
+    }
+    if (future == null) {
+      return connCtx.failedFuture("Cannot resolve address " + server);
+    } else {
+      future.map(stream -> {
+        return createRequest(stream, method, headers, requestURI, proxyOptions, useSSL, idleTimeout, followRedirects, traceOperation);
       }).onComplete(promise);
-    return promise.future();
+      return promise.future();
+    }
   }
 
-  private void checkClosed() {
-    if (closeSequence.started()) {
-      throw new IllegalStateException("Client is closed");
+  Future<HttpClientRequest> createRequest(HttpClientConnection conn, ContextInternal context) {
+    return conn.createStream(context).map(this::createRequest);
+  }
+
+  private HttpClientRequest createRequest(HttpClientStream stream) {
+    HttpClientRequest request = new HttpClientRequestImpl(stream, stream.getContext().promise(), HttpMethod.GET, "/");
+    Function<HttpClientResponse, Future<RequestOptions>> rHandler = redirectHandler;
+    if (rHandler != null) {
+      request.setMaxRedirects(options.getMaxRedirects());
+      request.redirectHandler(resp -> {
+        Future<RequestOptions> fut_ = rHandler.apply(resp);
+        if (fut_ != null) {
+          return fut_.compose(this::request);
+        } else {
+          return null;
+        }
+      });
     }
+    return request;
+  }
+
+  private HttpClientRequest createRequest(
+    HttpClientStream stream,
+    HttpMethod method,
+    MultiMap headers,
+    String requestURI,
+    ProxyOptions proxyOptions,
+    Boolean useSSL,
+    long idleTimeout,
+    Boolean followRedirects,
+    String traceOperation) {
+    String u = requestURI;
+    HostAndPort authority = stream.connection().authority();
+    if (proxyOptions != null && !useSSL && proxyOptions.getType() == ProxyType.HTTP) {
+      if (!ABS_URI_START_PATTERN.matcher(u).find()) {
+        int defaultPort = 80;
+        String addPort = (authority.port() != -1 && authority.port() != defaultPort) ? (":" + authority.port()) : "";
+        u = (useSSL == Boolean.TRUE ? "https://" : "http://") + authority.host() + addPort + requestURI;
+      }
+    }
+    HttpClientRequest request = createRequest(stream);
+    request.setURI(u);
+    request.setMethod(method);
+    request.traceOperation(traceOperation);
+    request.setFollowRedirects(followRedirects == Boolean.TRUE);
+    if (headers != null) {
+      request.headers().setAll(headers);
+    }
+    if (proxyOptions != null && !useSSL && proxyOptions.getType() == ProxyType.HTTP) {
+      if (proxyOptions.getUsername() != null && proxyOptions.getPassword() != null) {
+        request.headers().add("Proxy-Authorization", "Basic " + Base64.getEncoder()
+          .encodeToString((proxyOptions.getUsername() + ":" + proxyOptions.getPassword()).getBytes()));
+      }
+    }
+    if (idleTimeout > 0L) {
+      // Maybe later ?
+      request.idleTimeout(idleTimeout);
+    }
+    return request;
   }
 }

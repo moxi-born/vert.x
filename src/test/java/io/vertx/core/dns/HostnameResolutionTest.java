@@ -21,7 +21,8 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
-import io.vertx.core.impl.AddressResolver;
+import io.vertx.core.impl.HostnameResolver;
+import io.vertx.core.impl.Utils;
 import io.vertx.core.impl.VertxImpl;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.json.JsonObject;
@@ -31,19 +32,19 @@ import io.vertx.core.net.NetServerOptions;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.core.VertxTestBase;
 import io.vertx.test.fakedns.FakeDNSServer;
-import org.apache.directory.server.dns.messages.ResourceRecord;
+import org.junit.Assume;
 import org.junit.Test;
 
 import java.io.File;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -327,7 +328,7 @@ public class HostnameResolutionTest extends VertxTestBase {
       CountDownLatch connectLatch = new CountDownLatch(1);
       Bootstrap bootstrap = new Bootstrap();
       bootstrap.channelFactory(((VertxInternal)vertx).transport().channelFactory(false));
-      bootstrap.group(vertx.nettyEventLoopGroup());
+      bootstrap.group(((VertxInternal)vertx).nettyEventLoopGroup());
       bootstrap.resolver(((VertxInternal) vertx).nettyAddressResolverGroup());
       bootstrap.handler(new ChannelInitializer<Channel>() {
         @Override
@@ -413,6 +414,37 @@ public class HostnameResolutionTest extends VertxTestBase {
       testComplete();
     }));
     await();
+  }
+
+  @Test
+  public void testRefreshHosts1() throws Exception {
+    Assume.assumeFalse(Utils.isWindows());
+    InetAddress addr = testRefreshHosts((int) TimeUnit.SECONDS.toNanos(1));
+    assertEquals("192.168.0.16", addr.getHostAddress());
+    assertEquals("server.net", addr.getHostName());
+  }
+
+  @Test
+  public void testRefreshHosts2() throws Exception {
+    InetAddress addr = testRefreshHosts(0);
+    assertEquals("192.168.0.15", addr.getHostAddress());
+    assertEquals("server.net", addr.getHostName());
+  }
+
+  private InetAddress testRefreshHosts(int period) throws Exception {
+    File hosts = File.createTempFile("vertx", "hosts");
+    hosts.deleteOnExit();
+    Files.writeString(hosts.toPath(), "192.168.0.15 server.net");
+    AddressResolverOptions options = new AddressResolverOptions()
+      .setHostsPath(hosts.getAbsolutePath())
+      .setHostsRefreshPeriod(period);
+    VertxInternal vertx = (VertxInternal) vertx(new VertxOptions().setAddressResolverOptions(options));
+    InetAddress addr = awaitFuture(vertx.resolveAddress("server.net"));
+    assertEquals("192.168.0.15", addr.getHostAddress());
+    assertEquals("server.net", addr.getHostName());
+    Files.writeString(hosts.toPath(), "192.168.0.16 server.net");
+    Thread.sleep(1000);
+    return awaitFuture(vertx.resolveAddress("server.net"));
   }
 
   @Test
@@ -734,45 +766,45 @@ public class HostnameResolutionTest extends VertxTestBase {
 
   @Test
   public void testParseResolvConf() {
-    assertEquals(-1, AddressResolver.parseNdotsOptionFromResolvConf("options"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots: 4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("\noptions ndots: 4"));
-    assertEquals(-1, AddressResolver.parseNdotsOptionFromResolvConf("boptions ndots: 4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf(" options ndots: 4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("\toptions ndots: 4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("\foptions ndots: 4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("\n options ndots: 4"));
+    assertEquals(-1, HostnameResolver.parseNdotsOptionFromResolvConf("options"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots: 4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("\noptions ndots: 4"));
+    assertEquals(-1, HostnameResolver.parseNdotsOptionFromResolvConf("boptions ndots: 4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf(" options ndots: 4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("\toptions ndots: 4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("\foptions ndots: 4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("\n options ndots: 4"));
 
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options\tndots: 4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options\fndots: 4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options  ndots: 4"));
-    assertEquals(-1, AddressResolver.parseNdotsOptionFromResolvConf("options\nndots: 4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options\tndots: 4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options\fndots: 4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options  ndots: 4"));
+    assertEquals(-1, HostnameResolver.parseNdotsOptionFromResolvConf("options\nndots: 4"));
 
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:\t4"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:  4"));
-    assertEquals(-1, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:\n4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:\t4"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:  4"));
+    assertEquals(-1, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:\n4"));
 
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4 "));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4\t"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4\f"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4\n"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4\r"));
-    assertEquals(-1, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4_"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4 "));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4\t"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4\f"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4\n"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4\r"));
+    assertEquals(-1, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4_"));
 
-    assertEquals(2, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4\noptions ndots:2"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options ndots:4 debug"));
-    assertEquals(4, AddressResolver.parseNdotsOptionFromResolvConf("options debug ndots:4"));
+    assertEquals(2, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4\noptions ndots:2"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options ndots:4 debug"));
+    assertEquals(4, HostnameResolver.parseNdotsOptionFromResolvConf("options debug ndots:4"));
 
-    assertEquals(false, AddressResolver.parseRotateOptionFromResolvConf("options"));
-    assertEquals(true, AddressResolver.parseRotateOptionFromResolvConf("options rotate"));
-    assertEquals(true, AddressResolver.parseRotateOptionFromResolvConf("options rotate\n"));
-    assertEquals(false, AddressResolver.parseRotateOptionFromResolvConf("options\nrotate"));
+    assertEquals(false, HostnameResolver.parseRotateOptionFromResolvConf("options"));
+    assertEquals(true, HostnameResolver.parseRotateOptionFromResolvConf("options rotate"));
+    assertEquals(true, HostnameResolver.parseRotateOptionFromResolvConf("options rotate\n"));
+    assertEquals(false, HostnameResolver.parseRotateOptionFromResolvConf("options\nrotate"));
   }
 
   @Test
   public void testResolveLocalhost() {
-    AddressResolver resolver = new AddressResolver((VertxImpl) vertx, new AddressResolverOptions());
+    HostnameResolver resolver = new HostnameResolver((VertxImpl) vertx, new AddressResolverOptions());
 
     resolver.resolveHostname("LOCALHOST").onComplete(res -> {
       if (res.succeeded()) {
@@ -805,9 +837,9 @@ public class HostnameResolutionTest extends VertxTestBase {
 
     List<String> expectedIPAddresses = Arrays.asList("127.0.0.2", "127.0.0.3");
 
-    addRecordsToStore(dnsServer, "fakeAddress.com", expectedIPAddresses.toArray(new String[0]));
+    dnsServer.addRecordsToStore( "fakeAddress.com", expectedIPAddresses.toArray(new String[0]));
 
-    AddressResolver resolver = new AddressResolver(vertx, getAddressResolverOptions());
+    HostnameResolver resolver = new HostnameResolver(vertx, getAddressResolverOptions());
 
     resolver.resolveHostnameAll("fakeAddress.com", res -> {
       if (res.succeeded()) {
@@ -857,7 +889,7 @@ public class HostnameResolutionTest extends VertxTestBase {
         InetSocketAddress dnsServerAddress = dnsServers.get(i).localAddress();
         options.addServer(dnsServerAddress.getAddress().getHostAddress() + ":" + dnsServerAddress.getPort());
       }
-      AddressResolver resolver = new AddressResolver(vertx, options);
+      HostnameResolver resolver = new HostnameResolver(vertx, options);
       for (int i = 0; i < num; i++) {
         CompletableFuture<InetAddress> result = new CompletableFuture<>();
         resolver.resolveHostname("vertx.io").onComplete(ar -> {
@@ -896,24 +928,11 @@ public class HostnameResolutionTest extends VertxTestBase {
     testAddressSelection(getAddressResolverOptions().setRoundRobinInetAddress(false), 1);
   }
 
-  private void addRecordsToStore(FakeDNSServer server,String domainName,String ...entries){
-
-    final Set<ResourceRecord> records = new LinkedHashSet<>();
-
-    Function<String, ResourceRecord> createRecord = ipAddress -> new FakeDNSServer.VertxResourceRecord(domainName, ipAddress);
-
-    for (String e : entries){
-      records.add(createRecord.apply(e));
-    }
-
-    server.store(x -> records);
-  }
-
   private void testAddressSelection(AddressResolverOptions options, int expected) throws Exception {
 
-    addRecordsToStore(dnsServer,"vertx.io","127.0.0.1","127.0.0.2");
+    dnsServer.addRecordsToStore("vertx.io", "127.0.0.1", "127.0.0.2");
 
-    AddressResolver resolver = new AddressResolver(vertx, options);
+    HostnameResolver resolver = new HostnameResolver(vertx, options);
     Set<String> resolved = Collections.synchronizedSet(new HashSet<>());
     //due to the random nature of netty's round robin algorithm
     //the below outcome is generally non-deterministic and will fail once in about 2^100 runs (virtually never)
@@ -941,7 +960,7 @@ public class HostnameResolutionTest extends VertxTestBase {
       options.addServer(dnsServerAddress.getAddress().getHostAddress() + ":" + (FakeDNSServer.PORT + 1));
       // Second server is the failed over server
       options.addServer(dnsServerAddress.getAddress().getHostAddress() + ":" + dnsServerAddress.getPort());
-      AddressResolver resolver = new AddressResolver((VertxImpl) vertx, options);
+      HostnameResolver resolver = new HostnameResolver((VertxImpl) vertx, options);
       CompletableFuture<InetAddress> result = new CompletableFuture<>();
       resolver.resolveHostname("vertx.io").onComplete(ar -> {
         if (ar.succeeded()) {

@@ -13,6 +13,7 @@ package io.vertx.core.net;
 
 import io.netty.handler.logging.ByteBufFormat;
 import io.vertx.codegen.annotations.DataObject;
+import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.ClientAuth;
 import io.vertx.core.json.JsonObject;
@@ -46,16 +47,6 @@ public class NetServerOptions extends TCPSSLOptions {
   public static final int DEFAULT_ACCEPT_BACKLOG = -1;
 
   /**
-   * Default value of whether client auth is required (SSL/TLS) = No
-   */
-  public static final ClientAuth DEFAULT_CLIENT_AUTH = ClientAuth.NONE;
-
-  /**
-   * Default value of whether the server supports SNI = false
-   */
-  public static final boolean DEFAULT_SNI = false;
-
-  /**
    * Default value of whether the server supports HA PROXY protocol = false
    */
   public static final boolean DEFAULT_USE_PROXY_PROTOCOL = false;
@@ -78,12 +69,11 @@ public class NetServerOptions extends TCPSSLOptions {
   private int port;
   private String host;
   private int acceptBacklog;
-  private ClientAuth clientAuth;
-  private boolean sni;
   private boolean useProxyProtocol;
   private long proxyProtocolTimeout;
   private TimeUnit proxyProtocolTimeoutUnit;
   private boolean registerWriteHandler;
+  private TrafficShapingOptions trafficShapingOptions;
 
   /**
    * Default constructor
@@ -103,14 +93,13 @@ public class NetServerOptions extends TCPSSLOptions {
     this.port = other.getPort();
     this.host = other.getHost();
     this.acceptBacklog = other.getAcceptBacklog();
-    this.clientAuth = other.getClientAuth();
-    this.sni = other.isSni();
     this.useProxyProtocol = other.isUseProxyProtocol();
     this.proxyProtocolTimeout = other.proxyProtocolTimeout;
     this.proxyProtocolTimeoutUnit = other.getProxyProtocolTimeoutUnit() != null ?
       other.getProxyProtocolTimeoutUnit() :
       DEFAULT_PROXY_PROTOCOL_TIMEOUT_TIME_UNIT;
     this.registerWriteHandler = other.registerWriteHandler;
+    this.trafficShapingOptions = other.getTrafficShapingOptions();
   }
 
   /**
@@ -125,6 +114,15 @@ public class NetServerOptions extends TCPSSLOptions {
   }
 
   /**
+   * Copy these options.
+   *
+   * @return a copy of this
+   */
+  public NetServerOptions copy() {
+    return new NetServerOptions(this);
+  }
+
+  /**
    * Convert to JSON
    *
    * @return the JSON
@@ -133,6 +131,17 @@ public class NetServerOptions extends TCPSSLOptions {
     JsonObject json = super.toJson();
     NetServerOptionsConverter.toJson(this, json);
     return json;
+  }
+
+  @GenIgnore
+  @Override
+  public ServerSSLOptions getSslOptions() {
+    return (ServerSSLOptions) super.getSslOptions();
+  }
+
+  @Override
+  protected ServerSSLOptions getOrCreateSSLOptions() {
+    return (ServerSSLOptions) super.getOrCreateSSLOptions();
   }
 
   @Override
@@ -226,57 +235,15 @@ public class NetServerOptions extends TCPSSLOptions {
   }
 
   @Override
-  public NetServerOptions setJdkSslEngineOptions(JdkSSLEngineOptions sslEngineOptions) {
-    return (NetServerOptions) super.setSslEngineOptions(sslEngineOptions);
-  }
-
-  @Override
-  public NetServerOptions setOpenSslEngineOptions(OpenSSLEngineOptions sslEngineOptions) {
-    return (NetServerOptions) super.setSslEngineOptions(sslEngineOptions);
-  }
-
-  @Override
   public NetServerOptions setKeyCertOptions(KeyCertOptions options) {
     super.setKeyCertOptions(options);
     return this;
   }
 
   @Override
-  public NetServerOptions setKeyStoreOptions(JksOptions options) {
-    super.setKeyStoreOptions(options);
-    return this;
-  }
-
-  @Override
-  public NetServerOptions setPfxKeyCertOptions(PfxOptions options) {
-    return (NetServerOptions) super.setPfxKeyCertOptions(options);
-  }
-
-  @Override
-  public NetServerOptions setPemKeyCertOptions(PemKeyCertOptions options) {
-    return (NetServerOptions) super.setPemKeyCertOptions(options);
-  }
-
-  @Override
   public NetServerOptions setTrustOptions(TrustOptions options) {
     super.setTrustOptions(options);
     return this;
-  }
-
-  @Override
-  public NetServerOptions setTrustStoreOptions(JksOptions options) {
-    super.setTrustStoreOptions(options);
-    return this;
-  }
-
-  @Override
-  public NetServerOptions setPfxTrustOptions(PfxOptions options) {
-    return (NetServerOptions) super.setPfxTrustOptions(options);
-  }
-
-  @Override
-  public NetServerOptions setPemTrustOptions(PemTrustOptions options) {
-    return (NetServerOptions) super.setPemTrustOptions(options);
   }
 
   @Override
@@ -401,7 +368,8 @@ public class NetServerOptions extends TCPSSLOptions {
   }
 
   public ClientAuth getClientAuth() {
-    return clientAuth;
+    ServerSSLOptions o = getSslOptions();
+    return o != null ? o.getClientAuth() : ServerSSLOptions.DEFAULT_CLIENT_AUTH;
   }
 
   /**
@@ -413,7 +381,7 @@ public class NetServerOptions extends TCPSSLOptions {
    * @return a reference to this, so the API can be used fluently
    */
   public NetServerOptions setClientAuth(ClientAuth clientAuth) {
-    this.clientAuth = clientAuth;
+    getOrCreateSSLOptions().setClientAuth(clientAuth);
     return this;
   }
 
@@ -431,7 +399,8 @@ public class NetServerOptions extends TCPSSLOptions {
    * @return whether the server supports Server Name Indication
    */
   public boolean isSni() {
-    return sni;
+    ServerSSLOptions o = getSslOptions();
+    return o != null ? o.isSni() : ServerSSLOptions.DEFAULT_SNI;
   }
 
   /**
@@ -440,7 +409,7 @@ public class NetServerOptions extends TCPSSLOptions {
    * @return a reference to this, so the API can be used fluently
    */
   public NetServerOptions setSni(boolean sni) {
-    this.sni = sni;
+    getOrCreateSSLOptions().setSni(sni);
     return this;
   }
 
@@ -498,12 +467,28 @@ public class NetServerOptions extends TCPSSLOptions {
     return proxyProtocolTimeoutUnit;
   }
 
+  /**
+   * @return traffic shaping options used by Net server.
+   */
+  public TrafficShapingOptions getTrafficShapingOptions() {
+    return this.trafficShapingOptions;
+  }
+
+  /**
+   * Set traffic shaping options. If not specified, traffic is unthrottled.
+   *
+   * @param trafficShapingOptions options used by traffic handler
+   * @return a reference to this, so the API can be used fluently
+   */
+  public NetServerOptions setTrafficShapingOptions(TrafficShapingOptions trafficShapingOptions) {
+    this.trafficShapingOptions = trafficShapingOptions;
+    return this;
+  }
+
   private void init() {
     this.port = DEFAULT_PORT;
     this.host = DEFAULT_HOST;
     this.acceptBacklog = DEFAULT_ACCEPT_BACKLOG;
-    this.clientAuth = DEFAULT_CLIENT_AUTH;
-    this.sni = DEFAULT_SNI;
     this.useProxyProtocol = DEFAULT_USE_PROXY_PROTOCOL;
     this.proxyProtocolTimeout = DEFAULT_PROXY_PROTOCOL_TIMEOUT;
     this.proxyProtocolTimeoutUnit = DEFAULT_PROXY_PROTOCOL_TIMEOUT_TIME_UNIT;

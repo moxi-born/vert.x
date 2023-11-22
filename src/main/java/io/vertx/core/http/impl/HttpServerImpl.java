@@ -11,22 +11,22 @@
 
 package io.vertx.core.http.impl;
 
-import io.netty.channel.Channel;
+import io.netty.handler.traffic.GlobalTrafficShapingHandler;
 import io.vertx.core.*;
 import io.vertx.core.http.*;
 import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.impl.EventLoopContext;
 import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.net.SSLOptions;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.impl.*;
 import io.vertx.core.spi.metrics.MetricsProvider;
 import io.vertx.core.spi.metrics.TCPMetrics;
 import io.vertx.core.spi.metrics.VertxMetrics;
 
-import java.util.function.BiConsumer;
+import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -41,11 +41,9 @@ public class HttpServerImpl extends TCPServerBase implements HttpServer, Closeab
 
   private static final Handler<Throwable> DEFAULT_EXCEPTION_HANDLER = t -> log.trace("Connection failure", t);
 
-  private static final String FLASH_POLICY_HANDLER_PROP_NAME = "vertx.flashPolicyHandler";
   private static final String DISABLE_WEBSOCKETS_PROP_NAME = "vertx.disableWebsockets";
   private static final String DISABLE_H2C_PROP_NAME = "vertx.disableH2c";
 
-  static final boolean USE_FLASH_POLICY_HANDLER = Boolean.getBoolean(FLASH_POLICY_HANDLER_PROP_NAME);
   static final boolean DISABLE_WEBSOCKETS = Boolean.getBoolean(DISABLE_WEBSOCKETS_PROP_NAME);
 
   final HttpServerOptions options;
@@ -59,8 +57,18 @@ public class HttpServerImpl extends TCPServerBase implements HttpServer, Closeab
 
   public HttpServerImpl(VertxInternal vertx, HttpServerOptions options) {
     super(vertx, options);
-    this.options = new HttpServerOptions(options);
+    this.options = (HttpServerOptions) super.options;
     this.disableH2c = Boolean.getBoolean(DISABLE_H2C_PROP_NAME) || options.isSsl();
+  }
+
+  @Override
+  protected void configure(SSLOptions options) {
+    List<String> applicationProtocols = this.options
+      .getAlpnVersions()
+      .stream()
+      .map(HttpVersion::alpnName)
+      .collect(Collectors.toList());
+    options.setApplicationLayerProtocols(applicationProtocols);
   }
 
   @Override
@@ -134,10 +142,10 @@ public class HttpServerImpl extends TCPServerBase implements HttpServer, Closeab
   }
 
   @Override
-  protected BiConsumer<Channel, SslChannelProvider> childHandler(ContextInternal context, SocketAddress address) {
-    EventLoopContext connContext;
-    if (context instanceof EventLoopContext) {
-      connContext = (EventLoopContext) context;
+  protected Worker childHandler(ContextInternal context, SocketAddress address, GlobalTrafficShapingHandler trafficShapingHandler) {
+    ContextInternal connContext;
+    if (context.isEventLoopContext()) {
+      connContext = context;
     } else {
       connContext = vertx.createEventLoopContext(context.nettyEventLoop(), context.workerPool(), context.classLoader());
     }
@@ -155,16 +163,8 @@ public class HttpServerImpl extends TCPServerBase implements HttpServer, Closeab
       serverOrigin,
       disableH2c,
       hello,
-      hello.exceptionHandler);
-  }
-
-  @Override
-  protected SSLHelper createSSLHelper() {
-    return new SSLHelper(options, options
-      .getAlpnVersions()
-      .stream()
-      .map(HttpVersion::alpnName)
-      .collect(Collectors.toList()));
+      hello.exceptionHandler,
+      trafficShapingHandler);
   }
 
   @Override

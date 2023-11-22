@@ -27,6 +27,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.http.Cookie;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpMethod;
@@ -41,9 +42,9 @@ import io.vertx.core.http.impl.headers.Http2HeadersAdaptor;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.core.tracing.TracingPolicy;
 
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.security.cert.X509Certificate;
@@ -152,7 +153,7 @@ public class Http2ServerRequest extends HttpServerRequestInternal implements Htt
   public void handleData(Buffer data) {
     if (postRequestDecoder != null) {
       try {
-        postRequestDecoder.offer(new DefaultHttpContent(data.getByteBuf()));
+        postRequestDecoder.offer(new DefaultHttpContent(((BufferInternal)data).getByteBuf()));
       } catch (Exception e) {
         handleException(e);
       }
@@ -334,8 +335,8 @@ public class Http2ServerRequest extends HttpServerRequestInternal implements Htt
   }
 
   @Override
-  public String host() {
-    return stream.host;
+  public @Nullable HostAndPort authority() {
+    return stream.authority;
   }
 
   @Override
@@ -385,7 +386,7 @@ public class Http2ServerRequest extends HttpServerRequestInternal implements Htt
 
   @Override
   public SocketAddress remoteAddress() {
-    return stream.conn.remoteAddress();
+    return super.remoteAddress();
   }
 
   @Override

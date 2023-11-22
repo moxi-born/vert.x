@@ -176,32 +176,61 @@ public class VertxTest extends AsyncTestBase {
       }
       socketRef.get().end(Buffer.buffer(
         "HTTP/1.1 200 OK\r\n" +
-          "Content-Length\r\n" +
+          "Content-Length: 0\r\n" +
           "\r\n"
       ));
       long now = System.currentTimeMillis();
-      while (true) {
+      do {
         assertTrue(System.currentTimeMillis() - now < 20_000);
         runGC();
-        if (ref.get() == null) {
-          assertTrue(closed1.get());
-          break;
-        }
-      }
-      while (true) {
+      } while (!closed1.get());
+      now = System.currentTimeMillis();
+      do {
         assertTrue(System.currentTimeMillis() - now < 20_000);
         runGC();
-        if (ref.get() == null) {
-          assertTrue(closed2.get());
-          break;
-        }
-      }
+      } while (!closed2.get());
     } finally {
       vertx
         .close()
         .onComplete(onSuccess(v -> testComplete()));
     }
     await();
+  }
+
+  @Test
+  public void testFinalizeHttpClientWithRequestNotYetSent() throws Exception {
+    VertxInternal vertx = (VertxInternal) Vertx.vertx();
+    try {
+      CountDownLatch latch = new CountDownLatch(1);
+      vertx.createNetServer()
+        .connectHandler(so -> {
+          so.handler(buff -> {
+            so.write("HTTP/1.1 200 OK\r\n" +
+              "Content-Length: 0\r\n" +
+              "\r\n");
+          });
+        })
+        .listen(8080, "localhost")
+        .onComplete(onSuccess(server -> latch.countDown()));
+      awaitLatch(latch);
+      HttpClient client = vertx.createHttpClient(new PoolOptions().setHttp1MaxSize(1));
+      Future<HttpClientRequest> fut = client.request(HttpMethod.GET, 8080, "localhost", "/");
+      assertWaitUntil(fut::succeeded);
+      WeakReference<HttpClient> ref = new WeakReference<>(client);
+      client = null;
+      runGC();
+      assertNull(ref.get());
+      fut.onComplete(onSuccess(req -> {
+        req.send().onComplete(onSuccess(resp -> {
+          testComplete();
+        }));
+      }));
+      await();
+    } finally {
+      vertx
+        .close()
+        .onComplete(onSuccess(v -> testComplete()));
+    }
 
   }
 
@@ -273,23 +302,16 @@ public class VertxTest extends AsyncTestBase {
       }
       socketRef.get().close();
       long now = System.currentTimeMillis();
-      while (true) {
+      do {
         assertTrue(System.currentTimeMillis() - now < 20_000);
         runGC();
-        if (ref.get() == null) {
-          assertTrue(closed1.get());
-          break;
-        }
-      }
+      } while (!closed1.get());
       assertEquals(1, shutdownEventCount.get());
-      while (true) {
+      now = System.currentTimeMillis();
+      do {
         assertTrue(System.currentTimeMillis() - now < 20_000);
         runGC();
-        if (ref.get() == null) {
-          assertTrue(closed2.get());
-          break;
-        }
-      }
+      } while (!closed2.get());
     } finally {
       vertx
         .close()
@@ -342,13 +364,13 @@ public class VertxTest extends AsyncTestBase {
     VertxInternal vertx = (VertxInternal) Vertx.vertx();
     try {
       Thread[] threads = new Thread[2];
-      vertx.createSharedWorkerExecutor("LeakTest").executeBlocking(promise -> {
+      vertx.createSharedWorkerExecutor("LeakTest").executeBlocking(() -> {
         threads[0] = Thread.currentThread();
-        promise.complete();
+        return null;
       }).toCompletionStage().toCompletableFuture().get(20, TimeUnit.SECONDS);
-      vertx.createSharedWorkerExecutor("LeakTest").executeBlocking(promise -> {
+      vertx.createSharedWorkerExecutor("LeakTest").executeBlocking(() -> {
         threads[1] = Thread.currentThread();
-        promise.complete();
+        return null;
       }).toCompletionStage().toCompletableFuture().get(20, TimeUnit.SECONDS);
       runGC();
       assertFalse(threads[0].isAlive());
@@ -463,23 +485,25 @@ public class VertxTest extends AsyncTestBase {
     Vertx vertx = Vertx.vertx();
     try {
       WorkerExecutor exec = vertx.createSharedWorkerExecutor("pool");
-      WeakReference<Thread> ref = exec.<WeakReference<Thread>>executeBlocking(p -> {
-        p.complete(new WeakReference<>(Thread.currentThread()));
+      WeakReference<Thread> ref = exec.executeBlocking(() -> {
+        return new WeakReference<>(Thread.currentThread());
       }).toCompletionStage().toCompletableFuture().get();
       exec.close().toCompletionStage().toCompletableFuture().get();
       long now = System.currentTimeMillis();
-      while (true) {
+      do {
         assertTrue(System.currentTimeMillis() - now < 20_000);
         runGC();
-        if (ref.get() == null) {
-          break;
-        }
-      }
+      } while (ref.get() != null);
     } finally {
       vertx
         .close()
         .onComplete(onSuccess(v -> testComplete()));
     }
     await();
+  }
+
+  @Test
+  public void testVersion() {
+    assertNotNull(VertxInternal.version());
   }
 }

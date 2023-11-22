@@ -13,13 +13,14 @@ package io.vertx.core.http.impl;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.net.HostAndPort;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -33,6 +34,8 @@ public interface HttpClientConnection extends HttpConnection {
   };
 
   Handler<Long> DEFAULT_CONCURRENCY_CHANGE_HANDLER = concurrency -> {};
+
+  HostAndPort authority();
 
   /**
    * Set a {@code handler} called when the connection should be evicted from a pool.
@@ -57,6 +60,11 @@ public interface HttpClientConnection extends HttpConnection {
   long concurrency();
 
   /**
+   * @return the number of active streams
+   */
+  long activeStreams();
+
+  /**
    * @return the connection channel
    */
   Channel channel();
@@ -65,6 +73,14 @@ public interface HttpClientConnection extends HttpConnection {
    * @return the {@link ChannelHandlerContext} of the handler managing the connection
    */
   ChannelHandlerContext channelHandlerContext();
+
+  /**
+   * Create an HTTP stream.
+   *
+   * @param context the stream context
+   * @return a future notified with the created stream
+   */
+  Future<HttpClientRequest> createRequest(ContextInternal context);
 
   /**
    * Create an HTTP stream.

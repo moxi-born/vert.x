@@ -12,11 +12,8 @@
 package io.vertx.core;
 
 import io.vertx.codegen.annotations.DataObject;
-import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -29,29 +26,29 @@ import java.util.concurrent.TimeUnit;
 @DataObject(generateConverter = true, publicConverter = false)
 public class DeploymentOptions {
 
+  public static final ThreadingModel DEFAULT_MODE = ThreadingModel.EVENT_LOOP;
   public static final boolean DEFAULT_WORKER = false;
   public static final boolean DEFAULT_HA = false;
   public static final int DEFAULT_INSTANCES = 1;
 
   private JsonObject config;
-  private boolean worker;
+  private ThreadingModel threadingModel;
+  private boolean ha;
+  private int instances;
+  private ClassLoader classLoader;
   private String workerPoolName;
   private int workerPoolSize;
   private long maxWorkerExecuteTime;
-  private boolean ha;
-  private int instances;
   private TimeUnit maxWorkerExecuteTimeUnit;
-  private ClassLoader classLoader;
 
   /**
    * Default constructor
    */
   public DeploymentOptions() {
-    this.worker = DEFAULT_WORKER;
+    this.threadingModel = DEFAULT_MODE;
     this.config = null;
     this.ha = DEFAULT_HA;
     this.instances = DEFAULT_INSTANCES;
-    this.workerPoolName = null;
     this.workerPoolSize = VertxOptions.DEFAULT_WORKER_POOL_SIZE;
     this.maxWorkerExecuteTime = VertxOptions.DEFAULT_MAX_WORKER_EXECUTE_TIME;
     this.maxWorkerExecuteTimeUnit = VertxOptions.DEFAULT_MAX_WORKER_EXECUTE_TIME_UNIT;
@@ -64,12 +61,12 @@ public class DeploymentOptions {
    */
   public DeploymentOptions(DeploymentOptions other) {
     this.config = other.getConfig() == null ? null : other.getConfig().copy();
-    this.worker = other.isWorker();
+    this.threadingModel = other.getThreadingModel();
     this.ha = other.isHa();
     this.instances = other.instances;
     this.workerPoolName = other.workerPoolName;
-    setWorkerPoolSize(other.workerPoolSize);
-    setMaxWorkerExecuteTime(other.maxWorkerExecuteTime);
+    this.workerPoolSize = other.workerPoolSize;
+    this.maxWorkerExecuteTime = other.maxWorkerExecuteTime;
     this.maxWorkerExecuteTimeUnit = other.maxWorkerExecuteTimeUnit;
   }
 
@@ -81,18 +78,6 @@ public class DeploymentOptions {
   public DeploymentOptions(JsonObject json) {
     this();
     DeploymentOptionsConverter.fromJson(json, this);
-  }
-
-  /**
-   * Initialise the fields of this instance from the specified JSON
-   *
-   * @param json  the JSON
-   */
-  public void fromJson(JsonObject json) {
-    this.config = json.getJsonObject("config");
-    this.worker = json.getBoolean("worker", DEFAULT_WORKER);
-    this.ha = json.getBoolean("ha", DEFAULT_HA);
-    this.instances = json.getInteger("instances", DEFAULT_INSTANCES);
   }
 
   /**
@@ -116,22 +101,22 @@ public class DeploymentOptions {
   }
 
   /**
-   * Should the verticle(s) be deployed as a worker verticle?
+   * Which threading model the verticle(s) should use?
    *
-   * @return true if will be deployed as worker, false otherwise
+   * @return the verticle threading model
    */
-  public boolean isWorker() {
-    return worker;
+  public ThreadingModel getThreadingModel() {
+    return threadingModel;
   }
 
   /**
-   * Set whether the verticle(s) should be deployed as a worker verticle
+   * Set the verticle(s) verticle(s) threading model, e.g. a worker or a virtual thread verticle
    *
-   * @param worker true for worker, false otherwise
+   * @param threadingModel the threading model
    * @return a reference to this, so the API can be used fluently
    */
-  public DeploymentOptions setWorker(boolean worker) {
-    this.worker = worker;
+  public DeploymentOptions setThreadingModel(ThreadingModel threadingModel) {
+    this.threadingModel = threadingModel;
     return this;
   }
 
@@ -218,7 +203,7 @@ public class DeploymentOptions {
    */
   public DeploymentOptions setWorkerPoolSize(int workerPoolSize) {
     if (workerPoolSize < 1) {
-      throw new IllegalArgumentException("workerPoolSize must be > 0");
+      throw new IllegalArgumentException("size must be > 0");
     }
     this.workerPoolSize = workerPoolSize;
     return this;
@@ -252,7 +237,7 @@ public class DeploymentOptions {
    */
   public DeploymentOptions setMaxWorkerExecuteTime(long maxWorkerExecuteTime) {
     if (maxWorkerExecuteTime < 1) {
-      throw new IllegalArgumentException("maxWorkerExecuteTime must be > 0");
+      throw new IllegalArgumentException("maxExecuteTime must be > 0");
     }
     this.maxWorkerExecuteTime = maxWorkerExecuteTime;
     return this;

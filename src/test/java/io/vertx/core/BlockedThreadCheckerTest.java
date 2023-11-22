@@ -15,7 +15,6 @@ import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.impl.btc.BlockedThreadEvent;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.core.VertxTestBase;
-import org.junit.Assert;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -30,25 +29,26 @@ import static java.util.concurrent.TimeUnit.*;
  */
 public class BlockedThreadCheckerTest extends VertxTestBase {
 
-  private volatile List<BlockedThreadEvent> events;
+  private final List<BlockedThreadEvent> events = Collections.synchronizedList(new ArrayList<>());
 
   public void expectMessage(String poolName, long maxExecuteTime, TimeUnit maxExecuteTimeUnit) {
-    boolean match = events
-      .stream()
-      .anyMatch(event ->
-        event.thread().getName().startsWith(poolName) &&
-        event.maxExecTime() == maxExecuteTimeUnit.toNanos(maxExecuteTime));
-    Assert.assertTrue("Invalid events " + events, match);
+    List<BlockedThreadEvent> copy;
+    synchronized (events) {
+      copy = new ArrayList<>(events);
+    }
+    boolean match = false;
+    for (BlockedThreadEvent event : copy) {
+      if (event.thread().getName().startsWith(poolName) &&
+        event.maxExecTime() == maxExecuteTimeUnit.toNanos(maxExecuteTime)) {
+        match = true;
+        break;
+      }
+    }
+    assertTrue("Invalid events: " + copy, match);
   }
 
   private void catchBlockedThreadEvents(Vertx vertx) {
     ((VertxInternal)vertx).blockedThreadChecker().setThreadBlockedHandler(event -> events.add(event));
-  }
-
-  @Override
-  public void setUp() throws Exception {
-    super.setUp();
-    events = Collections.synchronizedList(new ArrayList<>());
   }
 
   @Test
@@ -115,7 +115,7 @@ public class BlockedThreadCheckerTest extends VertxTestBase {
     try {
       catchBlockedThreadEvents(newVertx);
       DeploymentOptions deploymentOptions = new DeploymentOptions();
-      deploymentOptions.setWorker(true);
+      deploymentOptions.setThreadingModel(ThreadingModel.WORKER);
       newVertx.deployVerticle(verticle, deploymentOptions);
       await();
       expectMessage("vert.x-worker-thread", maxWorkerExecuteTime, maxWorkerExecuteTimeUnit);
@@ -129,13 +129,14 @@ public class BlockedThreadCheckerTest extends VertxTestBase {
     Verticle verticle = new AbstractVerticle() {
       @Override
       public void start() throws InterruptedException {
-        vertx.executeBlocking(fut -> {
+        vertx.executeBlocking(() -> {
           try {
             Thread.sleep(3000);
           } catch (InterruptedException e) {
             fail();
           }
           testComplete();
+          return null;
         });
       }
     };
@@ -169,13 +170,9 @@ public class BlockedThreadCheckerTest extends VertxTestBase {
     vertx.deployVerticle(new AbstractVerticle() {
       @Override
       public void start(Promise<Void> startPromise) throws Exception {
-        vertx.<Void>executeBlocking(fut -> {
-          try {
-            SECONDS.sleep(5);
-            fut.complete();
-          } catch (InterruptedException e) {
-            fut.fail(e);
-          }
+        vertx.<Void>executeBlocking(() -> {
+          SECONDS.sleep(5);
+          return null;
         }).onComplete(startPromise);
       }
     }, deploymentOptions).onComplete(onSuccess(did -> {
@@ -212,7 +209,7 @@ public class BlockedThreadCheckerTest extends VertxTestBase {
       complete();
     });
     DeploymentOptions deploymentOptions = new DeploymentOptions();
-    deploymentOptions.setWorker(true);
+    deploymentOptions.setThreadingModel(ThreadingModel.WORKER);
     newVertx.deployVerticle(verticle, deploymentOptions);
     await();
   }

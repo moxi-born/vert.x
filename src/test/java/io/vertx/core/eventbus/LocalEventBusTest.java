@@ -14,9 +14,7 @@ package io.vertx.core.eventbus;
 import io.vertx.core.*;
 import io.vertx.core.eventbus.impl.EventBusInternal;
 import io.vertx.core.eventbus.impl.MessageConsumerImpl;
-import io.vertx.core.impl.ConcurrentHashSet;
 import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.impl.EventLoopContext;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.test.core.TestUtils;
@@ -41,6 +39,7 @@ public class LocalEventBusTest extends EventBusTestBase {
   private EventBusInternal eb;
   private boolean running;
 
+  @Override
   public void setUp() throws Exception {
     super.setUp();
     vertx.close();
@@ -52,6 +51,7 @@ public class LocalEventBusTest extends EventBusTestBase {
     running = true;
   }
 
+  @Override
   protected void tearDown() throws Exception {
     closeVertx();
     super.tearDown();
@@ -66,6 +66,13 @@ public class LocalEventBusTest extends EventBusTestBase {
       assertTrue(latch.await(30, TimeUnit.SECONDS));
       running = false;
     }
+  }
+
+  @Override
+  protected Vertx[] vertices(int num) {
+    Vertx[] instances = new Vertx[num];
+    Arrays.fill(instances, vertx);
+    return instances;
   }
 
   @Test
@@ -671,7 +678,7 @@ public class LocalEventBusTest extends EventBusTestBase {
         if (worker) {
           assertTrue(ctx.isWorkerContext());
         } else {
-          assertTrue(ctx instanceof EventLoopContext);
+          assertTrue(ctx.isEventLoopContext());
         }
         Thread thr = Thread.currentThread();
         MessageConsumer<?> reg = vertx.eventBus().consumer(ADDRESS1).handler(msg -> {
@@ -699,13 +706,13 @@ public class LocalEventBusTest extends EventBusTestBase {
       }
     }
     MyVerticle verticle = new MyVerticle();
-    vertx.deployVerticle(verticle, new DeploymentOptions().setWorker(worker));
+    vertx.deployVerticle(verticle, new DeploymentOptions().setThreadingModel(worker ? ThreadingModel.WORKER : ThreadingModel.EVENT_LOOP));
     await();
   }
 
   @Test
   public void testContextsSend() throws Exception {
-    Set<ContextInternal> contexts = new ConcurrentHashSet<>();
+    Set<ContextInternal> contexts = ConcurrentHashMap.newKeySet();
     CountDownLatch latch = new CountDownLatch(2);
     vertx.eventBus().consumer(ADDRESS1).handler(msg -> {
       msg.reply("bar");
@@ -723,7 +730,7 @@ public class LocalEventBusTest extends EventBusTestBase {
 
   @Test
   public void testContextsPublish() throws Exception {
-    Set<ContextInternal> contexts = new ConcurrentHashSet<>();
+    Set<ContextInternal> contexts = ConcurrentHashMap.newKeySet();
     AtomicInteger cnt = new AtomicInteger();
     int numHandlers = 10;
     for (int i = 0; i < numHandlers; i++) {
@@ -922,96 +929,6 @@ public class LocalEventBusTest extends EventBusTestBase {
   @Override
   protected boolean shouldImmutableObjectBeCopied() {
     return false;
-  }
-
-  @Override
-  protected <T, R> void testSend(T val, R received, Consumer<T> consumer, DeliveryOptions options) {
-    eb.<T>consumer(ADDRESS1).handler((Message<T> msg) -> {
-      if (consumer == null) {
-        assertTrue(msg.isSend());
-        assertEquals(received, msg.body());
-        if (options != null && options.getHeaders() != null) {
-          assertNotNull(msg.headers());
-          assertEquals(options.getHeaders().size(), msg.headers().size());
-          for (Map.Entry<String, String> entry : options.getHeaders().entries()) {
-            assertEquals(msg.headers().get(entry.getKey()), entry.getValue());
-          }
-        }
-      } else {
-        consumer.accept(msg.body());
-      }
-      testComplete();
-    });
-    if (options != null) {
-      eb.send(ADDRESS1, val, options);
-    } else {
-      eb.send(ADDRESS1, val);
-    }
-    await();
-  }
-
-  @Override
-  protected <T> void testSend(T val, Consumer<T> consumer) {
-    testSend(val, val, consumer, null);
-  }
-
-  @Override
-  protected <T> void testReply(T val, Consumer<T> consumer) {
-    testReply(val, val, consumer, null);
-  }
-
-  @Override
-  protected <T, R> void testReply(T val, R received, Consumer<R> consumer, DeliveryOptions options) {
-
-    String str = TestUtils.randomUnicodeString(1000);
-    eb.consumer(ADDRESS1).handler(msg -> {
-      assertEquals(str, msg.body());
-      if (options != null) {
-        msg.reply(val, options);
-      } else {
-        msg.reply(val);
-      }
-    });
-    eb.<R>request(ADDRESS1, str).onComplete(onSuccess((Message<R> reply) -> {
-      if (consumer == null) {
-        assertTrue(reply.isSend());
-        assertEquals(received, reply.body());
-        if (options != null && options.getHeaders() != null) {
-          assertNotNull(reply.headers());
-          assertEquals(options.getHeaders().size(), reply.headers().size());
-          for (Map.Entry<String, String> entry: options.getHeaders().entries()) {
-            assertEquals(reply.headers().get(entry.getKey()), entry.getValue());
-          }
-        }
-      } else {
-        consumer.accept(reply.body());
-      }
-      testComplete();
-    }));
-    await();
-  }
-
-  @Override
-  protected <T> void testPublish(T val, Consumer<T> consumer) {
-    AtomicInteger count = new AtomicInteger();
-    class MyHandler implements Handler<Message<T>> {
-      @Override
-      public void handle(Message<T> msg) {
-        if (consumer == null) {
-          assertFalse(msg.isSend());
-          assertEquals(val, msg.body());
-        } else {
-          consumer.accept(msg.body());
-        }
-        if (count.incrementAndGet() == 2) {
-          testComplete();
-        }
-      }
-    }
-    eb.<T>consumer(ADDRESS1).handler(new MyHandler());
-    eb.<T>consumer(ADDRESS1).handler(new MyHandler());
-    eb.publish(ADDRESS1, val);
-    await();
   }
 
   @Test
@@ -1532,4 +1449,3 @@ public class LocalEventBusTest extends EventBusTestBase {
     await();
   }
 }
-

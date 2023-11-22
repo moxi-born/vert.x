@@ -10,18 +10,15 @@
  */
 package io.vertx.core.http.impl;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.Promise;
 import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.net.impl.pool.Endpoint;
+import io.vertx.core.net.impl.endpoint.Endpoint;
 import io.vertx.core.spi.metrics.ClientMetrics;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-abstract class ClientHttpEndpointBase<C> extends Endpoint<C> {
+abstract class ClientHttpEndpointBase<C> extends Endpoint {
 
   private final ClientMetrics metrics; // Shall be removed later combining the PoolMetrics with HttpClientMetrics
 
@@ -31,7 +28,6 @@ abstract class ClientHttpEndpointBase<C> extends Endpoint<C> {
     this.metrics = metrics;
   }
 
-  @Override
   public Future<C> requestConnection(ContextInternal ctx, long timeout) {
     Future<C> fut = requestConnection2(ctx, timeout);
     if (metrics != null) {
@@ -49,8 +45,6 @@ abstract class ClientHttpEndpointBase<C> extends Endpoint<C> {
   }
 
   protected abstract Future<C> requestConnection2(ContextInternal ctx, long timeout);
-
-  abstract void checkExpired();
 
   @Override
   protected void dispose() {

@@ -191,7 +191,7 @@ public class Http2Test extends HttpTest {
       .setUseAlpn(true)
       .setSsl(true)
       .addEnabledCipherSuite("TLS_RSA_WITH_AES_128_CBC_SHA") // Non Diffie-helman -> debuggable in wireshark
-      .setPemKeyCertOptions(Cert.SERVER_PEM.get())
+      .setKeyCertOptions(Cert.SERVER_PEM.get())
       .setSslEngineOptions(new OpenSSLEngineOptions());
     server.close();
     client.close();
@@ -359,7 +359,11 @@ public class Http2Test extends HttpTest {
     });
     startServer(testAddress);
     AtomicInteger closed = new AtomicInteger();
-    client.connectionHandler(conn -> conn.closeHandler(v -> closed.incrementAndGet()));
+    client.close();
+    client = vertx.httpClientBuilder()
+      .with(createBaseClientOptions())
+      .withConnectHandler(conn -> conn.closeHandler(v -> closed.incrementAndGet()))
+      .build();
     client.request(requestOptions).onComplete(onSuccess(req -> {
       req.send().onComplete(onFailure(err -> {}));
     }));
@@ -459,13 +463,17 @@ public class Http2Test extends HttpTest {
       });
     });
     startServer(testAddress);
-    client.connectionHandler(conn -> {
-      assertEquals(0, conn.remoteSettings().getMaxConcurrentStreams());
-      conn.remoteSettingsHandler(settings -> {
-        assertEquals(10, conn.remoteSettings().getMaxConcurrentStreams());
-        complete();
-      });
-    });
+    client.close();
+    client = vertx.httpClientBuilder()
+      .with(createBaseClientOptions())
+      .withConnectHandler(conn -> {
+        assertEquals(0, conn.remoteSettings().getMaxConcurrentStreams());
+        conn.remoteSettingsHandler(settings -> {
+          assertEquals(10, conn.remoteSettings().getMaxConcurrentStreams());
+          complete();
+        });
+      })
+      .build();
     client.request(new RequestOptions(requestOptions).setTimeout(10000))
       .compose(HttpClientRequest::send)
       .onComplete(onSuccess(resp -> complete()));
@@ -837,11 +845,14 @@ public class Http2Test extends HttpTest {
     startServer(testAddress);
     client.close();
     client = vertx.createHttpClient(new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2));
-    client.connectionHandler(conn -> {
-      conn.goAwayHandler(ga -> {
-        assertEquals(0, ga.getErrorCode());
-      });
-    });
+    client = vertx.httpClientBuilder()
+      .with(new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2))
+      .withConnectHandler(conn -> {
+        conn.goAwayHandler(ga -> {
+          assertEquals(0, ga.getErrorCode());
+        });
+      })
+      .build();
     Buffer payload = Buffer.buffer("some-data");
     client.request(new RequestOptions(requestOptions).setSsl(false)).onComplete(onSuccess(req -> {
       req.response()
@@ -1025,6 +1036,51 @@ public class Http2Test extends HttpTest {
         f3.onComplete(onSuccess(vvv -> {
           testComplete();
         }));
+      }));
+    }));
+    await();
+  }
+
+  @Test
+  public void testRstFloodProtection() throws Exception {
+    server.requestHandler(req -> {
+    });
+    startServer(testAddress);
+    int num = HttpServerOptions.DEFAULT_HTTP2_RST_FLOOD_MAX_RST_FRAME_PER_WINDOW + 1;
+    for (int i = 0;i < num;i++) {
+      int val = i;
+      client.request(requestOptions).onComplete(onSuccess(req -> {
+        if (val == 0) {
+          req
+            .connection()
+            .goAwayHandler(ga -> {
+              assertEquals(11, ga.getErrorCode()); // Enhance your calm
+              testComplete();
+            });
+        }
+        req.end().onComplete(onSuccess(v -> {
+          req.reset();
+        }));
+      }));
+    }
+    await();
+  }
+
+  @Test
+  public void testStreamResetErrorMapping() throws Exception {
+    server.requestHandler(req -> {
+    });
+    startServer(testAddress);
+    client.request(requestOptions).onComplete(onSuccess(req -> {
+      req.exceptionHandler(err -> {
+        assertTrue(err instanceof StreamResetException);
+        StreamResetException sre = (StreamResetException) err;
+        assertEquals(10, sre.getCode());
+        testComplete();
+      });
+      // Force stream allocation
+      req.sendHead().onComplete(onSuccess(v -> {
+        req.reset(10);
       }));
     }));
     await();

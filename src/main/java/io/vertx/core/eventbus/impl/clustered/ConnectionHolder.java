@@ -14,7 +14,7 @@ package io.vertx.core.eventbus.impl.clustered;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.eventbus.EventBusOptions;
-import io.vertx.core.eventbus.impl.OutboundDeliveryContext;
+import io.vertx.core.eventbus.impl.MessageImpl;
 import io.vertx.core.eventbus.impl.codecs.PingMessageCodec;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.impl.logging.Logger;
@@ -41,7 +41,7 @@ class ConnectionHolder {
   private final VertxInternal vertx;
   private final EventBusMetrics metrics;
 
-  private Queue<OutboundDeliveryContext<?>> pending;
+  private Queue<MessageWrite> pendingWrites;
   private NetSocket socket;
   private boolean connected;
   private long timeoutID = -1;
@@ -70,21 +70,21 @@ class ConnectionHolder {
   }
 
   // TODO optimise this (contention on monitor)
-  synchronized void writeMessage(OutboundDeliveryContext<?> ctx) {
+  synchronized void writeMessage(MessageImpl<?, ?> message, Promise<Void> writePromise) {
     if (connected) {
-      Buffer data = ((ClusteredMessage) ctx.message).encodeToWire();
+      Buffer data = ((ClusteredMessage) message).encodeToWire();
       if (metrics != null) {
-        metrics.messageWritten(ctx.message.address(), data.length());
+        metrics.messageWritten(message.address(), data.length());
       }
-      socket.write(data).onComplete(ctx);
+      socket.write(data).onComplete(writePromise);
     } else {
-      if (pending == null) {
+      if (pendingWrites == null) {
         if (log.isDebugEnabled()) {
           log.debug("Not connected to server " + remoteNodeId + " - starting queuing");
         }
-        pending = new ArrayDeque<>();
+        pendingWrites = new ArrayDeque<>();
       }
-      pending.add(ctx);
+      pendingWrites.add(new MessageWrite(message, writePromise));
     }
   }
 
@@ -100,10 +100,10 @@ class ConnectionHolder {
       vertx.cancelTimer(pingTimeoutID);
     }
     synchronized (this) {
-      OutboundDeliveryContext<?> msg;
-      if (pending != null) {
-        while ((msg = pending.poll()) != null) {
-          msg.written(cause);
+      MessageWrite msg;
+      if (pendingWrites != null) {
+        while ((msg = pendingWrites.poll()) != null) {
+          msg.writePromise.tryFail(cause);
         }
       }
     }
@@ -146,18 +146,27 @@ class ConnectionHolder {
     });
     // Start a pinger
     schedulePing();
-    if (pending != null) {
+    if (pendingWrites != null) {
       if (log.isDebugEnabled()) {
         log.debug("Draining the queue for server " + remoteNodeId);
       }
-      for (OutboundDeliveryContext<?> ctx : pending) {
+      for (MessageWrite ctx : pendingWrites) {
         Buffer data = ((ClusteredMessage<?, ?>)ctx.message).encodeToWire();
         if (metrics != null) {
           metrics.messageWritten(ctx.message.address(), data.length());
         }
-        socket.write(data).onComplete(ctx);
+        socket.write(data).onComplete(ctx.writePromise);
       }
     }
-    pending = null;
+    pendingWrites = null;
+  }
+
+  private static class MessageWrite {
+    final MessageImpl<?, ?> message;
+    final Promise<Void> writePromise;
+    MessageWrite(MessageImpl<?, ?> message, Promise<Void> writePromise) {
+      this.message = message;
+      this.writePromise = writePromise;
+    }
   }
 }

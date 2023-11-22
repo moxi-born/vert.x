@@ -12,14 +12,16 @@
 package io.vertx.core.http;
 
 import io.vertx.codegen.annotations.*;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
+
+import java.util.function.Function;
 
 /**
  * Represents a client-side HTTP request.
@@ -63,37 +65,17 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   HttpClientRequest drainHandler(Handler<Void> handler);
 
   /**
-   * Set the host value of the HTTP/1.1 {@code host} header or HTTP/2 {@code authority} pseudo header
-   * <p>The initial value is the same than the server socket address host.
-   * <p>Keep in mind that changing this value won't change the actual server socket address for this request.
+   * Override the request authority, when using HTTP/1.x this overrides the request {@code host} header, when using
+   * HTTP/2 this sets the {@code authority} pseudo header. When the port is a negative value, the default
+   * scheme port will be used.
    *
-   * @param host the host part of the HTTP/1.1 {@code host} header or HTTP/2 {@code authority} pseudo header
+   * <p>The default request authority is the server host and port when connecting to the server.
+   *
+   * @param authority override the request authority
    * @return a reference to this, so the API can be used fluently
    */
   @Fluent
-  HttpClientRequest setHost(String host);
-
-  /**
-   * @return the host value of the HTTP/1.1 {@code host} header or HTTP/2 {@code authority} pseudo header
-   */
-  String getHost();
-
-  /**
-   * Set the port value of the HTTP/1.1 {@code host} header or HTTP/2 {@code authority} pseudo header
-   *
-   * <p> Keep in mind that this won't change the actual server socket address for this request.
-   * <p>The initial value is the same than the server socket address port.
-   *
-   * @param port the port part of the HTTP/1.1 {@code host} header or HTTP/2 {@code authority} pseudo header
-   * @return a reference to this, so the API can be used fluently
-   */
-  @Fluent
-  HttpClientRequest setPort(int port);
-
-  /**
-   * @return the port value of the HTTP/1.1 {@code host} header or HTTP/2 {@code authority} pseudo header
-   */
-  int getPort();
+  HttpClientRequest authority(HostAndPort authority);
 
   /**
    * Set the request to follow HTTP redirects up to {@link HttpClientOptions#getMaxRedirects()}.
@@ -105,6 +87,11 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   HttpClientRequest setFollowRedirects(boolean followRedirects);
 
   /**
+   * @return whether HTTP redirections should be followed
+   */
+  boolean isFollowRedirects();
+
+  /**
    * Set the max number of HTTP redirects this request will follow. The default is {@code 0} which means
    * no redirects.
    *
@@ -113,6 +100,16 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    */
   @Fluent
   HttpClientRequest setMaxRedirects(int maxRedirects);
+
+  /**
+   * @return the maximum number of HTTP redirections to follow
+   */
+  int getMaxRedirects();
+
+  /**
+   * @return the number of followed redirections for the current HTTP request
+   */
+  int numberOfRedirections();
 
   /**
    * If chunked is true then the request will be set into HTTP chunked mode
@@ -213,6 +210,19 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   HttpClientRequest putHeader(CharSequence name, Iterable<CharSequence> values);
 
   /**
+   * Set the trace operation of this request.
+   *
+   * @param op the operation
+   * @return @return a reference to this, so the API can be used fluently
+   */
+  HttpClientRequest traceOperation(String op);
+
+  /**
+   * @return the trace operation of this request
+   */
+  String traceOperation();
+
+  /**
    * @return the HTTP version for this request
    */
   HttpVersion version();
@@ -257,6 +267,9 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    */
   @Fluent
   HttpClientRequest earlyHintsHandler(@Nullable Handler<MultiMap> handler);
+
+  @Fluent
+  HttpClientRequest redirectHandler(@Nullable Function<HttpClientResponse, Future<HttpClientRequest>>  handler);
 
   /**
    * Forces the head of the request to be written before {@link #end()} is called on the request or any data is
@@ -386,18 +399,15 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
   Future<Void> end();
 
   /**
-   * Set's the amount of time after which if the request does not return any data within the timeout period an
-   * {@link java.util.concurrent.TimeoutException} will be passed to the exception handler (if provided) and
-   * the request will be closed.
-   * <p>
-   * Calling this method more than once has the effect of canceling any existing timeout and starting
-   * the timeout from scratch.
+   * Sets the amount of time after which, if the request does not return any data within the timeout period,
+   * the request/response is closed and the related futures are failed with a {@link java.util.concurrent.TimeoutException},
+   * e.g. {@code Future<HttpClientResponse>} or {@code Future<Buffer>} response body.
    *
-   * @param timeoutMs The quantity of time in milliseconds.
+   * @param timeout the amount of time in milliseconds.
    * @return a reference to this, so the API can be used fluently
    */
   @Fluent
-  HttpClientRequest setTimeout(long timeoutMs);
+  HttpClientRequest idleTimeout(long timeout);
 
   /**
    * Set a push handler for this request.<p/>
@@ -483,8 +493,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    * @param payload the frame payload
    * @return a reference to this, so the API can be used fluently
    */
-  @Fluent
-  HttpClientRequest writeCustomFrame(int type, int flags, Buffer payload);
+  Future<Void> writeCustomFrame(int type, int flags, Buffer payload);
 
   /**
    * @return the id of the stream of this response, {@literal -1} when it is not yet determined, i.e
@@ -499,8 +508,7 @@ public interface HttpClientRequest extends WriteStream<Buffer> {
    *
    * @param frame the frame to write
    */
-  @Fluent
-  default HttpClientRequest writeCustomFrame(HttpFrame frame) {
+  default Future<Void> writeCustomFrame(HttpFrame frame) {
     return writeCustomFrame(frame.type(), frame.flags(), frame.payload());
   }
 

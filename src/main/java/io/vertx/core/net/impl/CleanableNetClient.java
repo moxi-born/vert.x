@@ -75,6 +75,11 @@ public class CleanableNetClient implements NetClientInternal {
   }
 
   @Override
+  public Future<NetSocket> connect(ConnectOptions connectOptions) {
+    return client.connect(connectOptions);
+  }
+
+  @Override
   public Future<Void> close() {
     action.timeout = 0L;
     action.timeUnit = TimeUnit.SECONDS;
@@ -83,8 +88,8 @@ public class CleanableNetClient implements NetClientInternal {
   }
 
   @Override
-  public Future<Void> updateSSLOptions(SSLOptions options) {
-    return client.updateSSLOptions(options);
+  public Future<Boolean> updateSSLOptions(ClientSSLOptions options, boolean force) {
+    return client.updateSSLOptions(options, force);
   }
 
   @Override
@@ -93,8 +98,8 @@ public class CleanableNetClient implements NetClientInternal {
   }
 
   @Override
-  public void connectInternal(ProxyOptions proxyOptions, SocketAddress remoteAddress, SocketAddress peerAddress, String serverName, boolean ssl, boolean useAlpn, boolean registerWriteHandlers, Promise<NetSocket> connectHandler, ContextInternal context, int remainingAttempts) {
-    client.connectInternal(proxyOptions, remoteAddress, peerAddress, serverName, ssl, useAlpn, registerWriteHandlers, connectHandler, context, remainingAttempts);
+  public void connectInternal(ConnectOptions connectOptions, Promise<NetSocket> connectHandler, ContextInternal context) {
+    client.connectInternal(connectOptions, connectHandler, context);
   }
 
   @Override

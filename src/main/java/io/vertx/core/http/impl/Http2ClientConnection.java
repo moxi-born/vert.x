@@ -15,20 +15,17 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http2.DefaultHttp2Headers;
-import io.netty.handler.codec.http2.Http2Error;
-import io.netty.handler.codec.http2.Http2Exception;
-import io.netty.handler.codec.http2.Http2Headers;
-import io.netty.handler.codec.http2.Http2Stream;
+import io.netty.handler.codec.http2.*;
 import io.netty.handler.timeout.IdleStateEvent;
+import io.netty.handler.timeout.TimeoutException;
 import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.*;
 import io.vertx.core.http.impl.headers.HeadersMultiMap;
 import io.vertx.core.http.impl.headers.Http2HeadersAdaptor;
 import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.impl.EventLoopContext;
 import io.vertx.core.impl.future.PromiseInternal;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.spi.metrics.ClientMetrics;
 import io.vertx.core.spi.metrics.HttpClientMetrics;
 import io.vertx.core.spi.tracing.SpanKind;
@@ -43,20 +40,28 @@ import java.util.function.BiConsumer;
  */
 class Http2ClientConnection extends Http2ConnectionBase implements HttpClientConnection {
 
-  private final HttpClientImpl client;
+  private final HttpClientBase client;
   private final ClientMetrics metrics;
+  private final HostAndPort authority;
   private Handler<Void> evictionHandler = DEFAULT_EVICTION_HANDLER;
   private Handler<Long> concurrencyChangeHandler = DEFAULT_CONCURRENCY_CHANGE_HANDLER;
   private long expirationTimestamp;
   private boolean evicted;
 
-  Http2ClientConnection(HttpClientImpl client,
-                        EventLoopContext context,
+  Http2ClientConnection(HttpClientBase client,
+                        ContextInternal context,
+                        HostAndPort authority,
                         VertxHttp2ConnectionHandler connHandler,
                         ClientMetrics metrics) {
     super(context, connHandler);
     this.metrics = metrics;
     this.client = client;
+    this.authority = authority;
+  }
+
+  @Override
+  public HostAndPort authority() {
+    return authority;
   }
 
   @Override
@@ -78,6 +83,11 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
       concurrency = Math.min(concurrency, http2MaxConcurrency);
     }
     return concurrency;
+  }
+
+  @Override
+  public long activeStreams() {
+    return handler.connection().numActiveStreams();
   }
 
   @Override
@@ -145,6 +155,11 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
         return context.failedFuture(e);
       }
     }
+  }
+
+  @Override
+  public Future<HttpClientRequest> createRequest(ContextInternal context) {
+    return ((HttpClientImpl)client).createRequest(this, context);
   }
 
   private StreamImpl createStream2(ContextInternal context) {
@@ -263,9 +278,9 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
     }
 
     @Override
-    void doWriteHeaders(Http2Headers headers, boolean end, Promise<Void> promise) {
+    void doWriteHeaders(Http2Headers headers, boolean end, boolean checkFlush, Promise<Void> promise) {
       isConnect = "CONNECT".contentEquals(headers.method());
-      super.doWriteHeaders(headers, end, promise);
+      super.doWriteHeaders(headers, end, checkFlush, promise);
     }
 
     @Override
@@ -564,7 +579,7 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
           headers.add(HttpUtils.toLowerCase(header.getKey()), header.getValue());
         }
       }
-      if (conn.client.options().isTryUseCompression() && headers.get(HttpHeaderNames.ACCEPT_ENCODING) == null) {
+      if (conn.client.options().isDecompressionSupported() && headers.get(HttpHeaderNames.ACCEPT_ENCODING) == null) {
         headers.set(HttpHeaderNames.ACCEPT_ENCODING, Http1xClientConnection.determineCompressionAcceptEncoding());
       }
       try {
@@ -575,10 +590,10 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
         return;
       }
       if (buf != null) {
-        doWriteHeaders(headers, false, null);
+        doWriteHeaders(headers, false, false, null);
         doWriteData(buf, e, promise);
       } else {
-        doWriteHeaders(headers, e, promise);
+        doWriteHeaders(headers, e, true, promise);
       }
     }
 
@@ -647,7 +662,14 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
 
     @Override
     public void reset(Throwable cause) {
-      long code = cause instanceof StreamResetException ? ((StreamResetException)cause).getCode() : 0;
+      long code;
+      if (cause instanceof StreamResetException) {
+        code = ((StreamResetException)cause).getCode();
+      } else if (cause instanceof java.util.concurrent.TimeoutException) {
+        code = 0x08L; // CANCEL
+      } else {
+        code = 0L;
+      }
       conn.context.emit(code, this::writeReset);
     }
 
@@ -665,20 +687,21 @@ class Http2ClientConnection extends Http2ConnectionBase implements HttpClientCon
   }
 
   public static VertxHttp2ConnectionHandler<Http2ClientConnection> createHttp2ConnectionHandler(
-    HttpClientImpl client,
+    HttpClientBase client,
     ClientMetrics metrics,
-    EventLoopContext context,
+    ContextInternal context,
     boolean upgrade,
-    Object socketMetric) {
+    Object socketMetric,
+    HostAndPort authority) {
     HttpClientOptions options = client.options();
     HttpClientMetrics met = client.metrics();
     VertxHttp2ConnectionHandler<Http2ClientConnection> handler = new VertxHttp2ConnectionHandlerBuilder<Http2ClientConnection>()
       .server(false)
-      .useDecompression(client.options().isTryUseCompression())
+      .useDecompression(client.options().isDecompressionSupported())
       .gracefulShutdownTimeoutMillis(0) // So client close tests don't hang 30 seconds - make this configurable later but requires HTTP/1 impl
       .initialSettings(client.options().getInitialSettings())
       .connectionFactory(connHandler -> {
-        Http2ClientConnection conn = new Http2ClientConnection(client, context, connHandler, metrics);
+        Http2ClientConnection conn = new Http2ClientConnection(client, context, authority, connHandler, metrics);
         if (metrics != null) {
           Object m = socketMetric;
           conn.metric(m);

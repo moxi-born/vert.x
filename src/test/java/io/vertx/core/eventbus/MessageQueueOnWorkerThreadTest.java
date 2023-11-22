@@ -57,7 +57,7 @@ public class MessageQueueOnWorkerThreadTest extends VertxTestBase {
     int senderInstances = 20, messagesToSend = 100, expected = senderInstances * messagesToSend;
     waitFor(expected);
     vertx.eventBus().consumer("foo", msg -> complete()).completion().onComplete(onSuccess(registered -> {
-      DeploymentOptions options = new DeploymentOptions().setWorker(worker).setInstances(senderInstances);
+      DeploymentOptions options = new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER).setInstances(senderInstances);
       vertx.deployVerticle(() -> new SenderVerticle(worker, messagesToSend), options);
     }));
     await(5, SECONDS);
@@ -89,7 +89,7 @@ public class MessageQueueOnWorkerThreadTest extends VertxTestBase {
     }
 
     @Override
-    public void selectForSend(Message<?> message, Promise<String> promise) {
+    public void selectForSend(String address, Promise<String> promise) {
       try {
         NANOSECONDS.sleep(150);
       } catch (InterruptedException e) {
@@ -99,7 +99,7 @@ public class MessageQueueOnWorkerThreadTest extends VertxTestBase {
     }
 
     @Override
-    public void selectForPublish(Message<?> message, Promise<Iterable<String>> promise) {
+    public void selectForPublish(String address, Promise<Iterable<String>> promise) {
       throw new UnsupportedOperationException();
     }
 
@@ -112,7 +112,7 @@ public class MessageQueueOnWorkerThreadTest extends VertxTestBase {
     }
   }
 
-  private static class SenderVerticle extends AbstractVerticle {
+  private class SenderVerticle extends AbstractVerticle {
 
     final boolean worker;
     int count;
@@ -123,19 +123,25 @@ public class MessageQueueOnWorkerThreadTest extends VertxTestBase {
     }
 
     @Override
-    public void start() throws Exception {
+    public void start() {
       sendMessage();
     }
 
     void sendMessage() {
       if (worker) {
-        vertx.executeBlocking(prom -> {
+        vertx.<Boolean>executeBlocking(() -> {
           if (count > 0) {
             vertx.eventBus().send("foo", "bar");
             count--;
-            prom.complete();
+            return true;
+          } else {
+            return false;
           }
-        }).onComplete(ar -> vertx.runOnContext(v -> sendMessage()));
+        }).onComplete(onSuccess(cont -> {
+          if (cont) {
+            vertx.runOnContext(v -> sendMessage());
+          }
+        }));
       } else {
         if (count > 0) {
           vertx.eventBus().send("foo", "bar");

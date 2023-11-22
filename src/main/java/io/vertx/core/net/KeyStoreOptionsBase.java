@@ -21,6 +21,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509KeyManager;
 import java.security.KeyStore;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -227,4 +228,33 @@ public abstract class KeyStoreOptionsBase implements KeyCertOptions, TrustOption
   @Override
   public abstract KeyStoreOptionsBase copy();
 
+  @Override
+  public boolean equals(Object obj) {
+    if (obj == this) {
+      return true;
+    }
+    if (obj != null && obj.getClass() == getClass()) {
+      KeyStoreOptionsBase that = (KeyStoreOptionsBase) obj;
+      return Objects.equals(provider, that.provider) &&
+        Objects.equals(type, that.type) &&
+        Objects.equals(password, that.password) &&
+        Objects.equals(path, that.path) &&
+        Objects.equals(value, that.value) &&
+        Objects.equals(alias, that.alias) &&
+        Objects.equals(aliasPassword, that.aliasPassword);
+    }
+    return false;
+  }
+
+  @Override
+  public int hashCode() {
+    int hashCode = Objects.hashCode(provider);
+    hashCode = 31 * hashCode + Objects.hashCode(type);
+    hashCode = 31 * hashCode + Objects.hashCode(password);
+    hashCode = 31 * hashCode + Objects.hashCode(path);
+    hashCode = 31 * hashCode + Objects.hashCode(value);
+    hashCode = 31 * hashCode + Objects.hashCode(alias);
+    hashCode = 31 * hashCode + Objects.hashCode(aliasPassword);
+    return hashCode;
+  }
 }

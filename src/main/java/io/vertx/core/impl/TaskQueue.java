@@ -15,8 +15,10 @@ import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
 
 import java.util.LinkedList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A task queue that always run all tasks in order. The executor to run the tasks is passed
@@ -34,22 +36,10 @@ public class TaskQueue {
 
   static final Logger log = LoggerFactory.getLogger(TaskQueue.class);
 
-  private static class Task {
-
-    private final Runnable runnable;
-    private final Executor exec;
-
-    public Task(Runnable runnable, Executor exec) {
-      this.runnable = runnable;
-      this.exec = exec;
-    }
-  }
-
   // @protectedby tasks
   private final LinkedList<Task> tasks = new LinkedList<>();
-
-  // @protectedby tasks
-  private Executor current;
+  private Executor currentExecutor;
+  private Thread currentThread;
 
   private final Runnable runner;
 
@@ -59,27 +49,92 @@ public class TaskQueue {
 
   private void run() {
     for (; ; ) {
-      final Task task;
+      final ExecuteTask execute;
       synchronized (tasks) {
-        task = tasks.poll();
+        Task task = tasks.poll();
         if (task == null) {
-          current = null;
+          currentExecutor = null;
           return;
         }
-        if (task.exec != current) {
-          tasks.addFirst(task);
-          task.exec.execute(runner);
-          current = task.exec;
+        if (task instanceof ResumeTask) {
+          ResumeTask resume = (ResumeTask) task;
+          currentExecutor = resume.executor;
+          currentThread = resume.thread;
+          resume.latch.run();
+          return;
+        }
+        execute = (ExecuteTask) task;
+        if (execute.exec != currentExecutor) {
+          tasks.addFirst(execute);
+          execute.exec.execute(runner);
+          currentExecutor = execute.exec;
           return;
         }
       }
       try {
-        task.runnable.run();
+        currentThread = Thread.currentThread();
+        execute.runnable.run();
       } catch (Throwable t) {
         log.error("Caught unexpected Throwable", t);
+      } finally {
+        currentThread = null;
       }
     }
-  };
+  }
+
+  /**
+   * Return a controller for the current task.
+   *
+   * @return the controller
+   * @throws IllegalStateException if the current thread is not currently being executed by the queue
+   */
+  public WorkerExecutor.TaskController current() {
+    Thread thread;
+    Executor executor;
+    synchronized (tasks) {
+      if (Thread.currentThread() != currentThread) {
+        throw new IllegalStateException();
+      }
+      thread = currentThread;
+      executor = currentExecutor;
+    }
+    return new WorkerExecutor.TaskController() {
+
+      final CountDownLatch latch = new CountDownLatch(1);
+
+      @Override
+      public void resume(Runnable callback) {
+        Runnable task = () -> {
+          callback.run();
+          latch.countDown();
+        };
+        synchronized (tasks) {
+          if (currentExecutor != null) {
+            tasks.addFirst(new ResumeTask(task, executor, thread));
+            return;
+          }
+          currentExecutor = executor;
+          currentThread = thread;
+        }
+        task.run();
+      }
+
+      @Override
+      public CountDownLatch suspend() {
+        if (Thread.currentThread() != thread) {
+          throw new IllegalStateException();
+        }
+        synchronized (tasks) {
+          if (currentThread == null || currentThread != Thread.currentThread()) {
+            throw new IllegalStateException();
+          }
+          currentThread = null;
+        }
+        executor.execute(runner);
+        return latch;
+      }
+    };
+  }
 
   /**
    * Run a task.
@@ -88,16 +143,59 @@ public class TaskQueue {
    */
   public void execute(Runnable task, Executor executor) {
     synchronized (tasks) {
-      tasks.add(new Task(task, executor));
-      if (current == null) {
-        current = executor;
+      if (currentExecutor == null) {
+        currentExecutor = executor;
         try {
           executor.execute(runner);
         } catch (RejectedExecutionException e) {
-          current = null;
+          currentExecutor = null;
           throw e;
         }
       }
+      // Add the task after the runner has been accepted to the executor
+      // to cover the case of a rejected execution exception.
+      tasks.add(new ExecuteTask(task, executor));
+    }
+  }
+
+  /**
+   * Test if the task queue is empty and no current executor is running anymore.
+   */
+  public boolean isEmpty() {
+    synchronized (tasks) {
+      return tasks.isEmpty() && currentExecutor == null;
+    }
+  }
+
+  /**
+   * A task of this queue.
+   */
+  private interface Task {
+  }
+
+  /**
+   * Execute another task
+   */
+  private static class ExecuteTask implements Task {
+    private final Runnable runnable;
+    private final Executor exec;
+    public ExecuteTask(Runnable runnable, Executor exec) {
+      this.runnable = runnable;
+      this.exec = exec;
+    }
+  }
+
+  /**
+   * Resume an existing task blocked on a thread
+   */
+  private static class ResumeTask implements Task {
+    private final Runnable latch;
+    private final Executor executor;
+    private final Thread thread;
+    ResumeTask(Runnable latch, Executor executor, Thread thread) {
+      this.latch = latch;
+      this.executor = executor;
+      this.thread = thread;
     }
   }
 }

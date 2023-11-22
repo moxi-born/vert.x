@@ -16,6 +16,7 @@ import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.resolver.AddressResolverGroup;
 import io.vertx.core.*;
+import io.vertx.core.dns.impl.DnsAddressResolverProvider;
 import io.vertx.core.http.impl.HttpServerImpl;
 import io.vertx.core.impl.btc.BlockedThreadChecker;
 import io.vertx.core.impl.future.PromiseInternal;
@@ -29,9 +30,12 @@ import io.vertx.core.spi.metrics.VertxMetrics;
 import io.vertx.core.spi.tracing.VertxTracer;
 
 import java.io.File;
+import java.lang.ref.Cleaner;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
@@ -44,6 +48,13 @@ import java.util.function.Function;
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
 public interface VertxInternal extends Vertx {
+
+  /**
+   * @return the Vert.x version
+   */
+  static String version() {
+    return VertxImpl.version();
+  }
 
   /**
    * @return a promise associated with the context returned by {@link #getOrCreateContext()}.
@@ -81,6 +92,8 @@ public interface VertxInternal extends Vertx {
 
   Transport transport();
 
+  Cleaner cleaner();
+
   default <C> C createSharedResource(String resourceKey, String resourceName, CloseFuture closeFuture, Function<CloseFuture, C> supplier) {
     return SharedResourceHolder.createSharedResource(this, resourceKey, resourceName, closeFuture, supplier);
   }
@@ -94,18 +107,47 @@ public interface VertxInternal extends Vertx {
   /**
    * @return event loop context
    */
-  EventLoopContext createEventLoopContext(Deployment deployment, CloseFuture closeFuture, WorkerPool workerPool, ClassLoader tccl);
-
-  EventLoopContext createEventLoopContext(EventLoop eventLoop, WorkerPool workerPool, ClassLoader tccl);
-
-  EventLoopContext createEventLoopContext();
+  ContextInternal createEventLoopContext(Deployment deployment, CloseFuture closeFuture, WorkerPool workerPool, ClassLoader tccl);
 
   /**
-   * @return worker loop context
+   * @return event loop context
    */
-  WorkerContext createWorkerContext(Deployment deployment, CloseFuture closeFuture, WorkerPool pool, ClassLoader tccl);
+  ContextInternal createEventLoopContext(EventLoop eventLoop, WorkerPool workerPool, ClassLoader tccl);
 
-  WorkerContext createWorkerContext();
+  /**
+   * @return event loop context
+   */
+  ContextInternal createEventLoopContext();
+
+  /**
+   * @return worker context
+   */
+  ContextInternal createWorkerContext(Deployment deployment, CloseFuture closeFuture, WorkerPool workerPool, ClassLoader tccl);
+
+  /**
+   * @return worker context
+   */
+  ContextInternal createWorkerContext(EventLoop eventLoop, WorkerPool workerPool, ClassLoader tccl);
+
+  /**
+   * @return worker context
+   */
+  ContextInternal createWorkerContext();
+
+  /**
+   * @return virtual thread context
+   */
+  ContextInternal createVirtualThreadContext(Deployment deployment, CloseFuture closeFuture, ClassLoader tccl);
+
+  /**
+   * @return virtual thread context
+   */
+  ContextInternal createVirtualThreadContext(EventLoop eventLoop, ClassLoader tccl);
+
+  /**
+   * @return virtual thread context
+   */
+  ContextInternal createVirtualThreadContext();
 
   @Override
   WorkerExecutorInternal createSharedWorkerExecutor(String name);
@@ -121,6 +163,8 @@ public interface VertxInternal extends Vertx {
 
   WorkerPool createSharedWorkerPool(String name, int poolSize, long maxExecuteTime, TimeUnit maxExecuteTimeUnit);
 
+  WorkerPool wrapWorkerPool(ExecutorService executor);
+
   void simulateKill();
 
   Deployment getDeployment(String deploymentID);
@@ -133,12 +177,12 @@ public interface VertxInternal extends Vertx {
 
   File resolveFile(String fileName);
 
-  default <T> Future<T> executeBlockingInternal(Handler<Promise<T>> blockingCodeHandler) {
+  default <T> Future<T> executeBlockingInternal(Callable<T> blockingCodeHandler) {
     ContextInternal context = getOrCreateContext();
     return context.executeBlockingInternal(blockingCodeHandler);
   }
 
-  default <T> Future<T> executeBlockingInternal(Handler<Promise<T>> blockingCodeHandler, boolean ordered) {
+  default <T> Future<T> executeBlockingInternal(Callable<T> blockingCodeHandler, boolean ordered) {
     ContextInternal context = getOrCreateContext();
     return context.executeBlockingInternal(blockingCodeHandler, ordered);
   }
@@ -156,14 +200,23 @@ public interface VertxInternal extends Vertx {
   Future<InetAddress> resolveAddress(String hostname);
 
   /**
-   * @return the address resolver
+   * @return the default hostname resolver
    */
-  AddressResolver addressResolver();
+  HostnameResolver hostnameResolver();
+
+  DnsAddressResolverProvider dnsAddressResolverProvider(InetSocketAddress addr);
 
   /**
    * @return the file resolver
    */
   FileResolver fileResolver();
+
+  /**
+   * Return the Netty EventLoopGroup used by Vert.x
+   *
+   * @return the EventLoopGroup
+   */
+  EventLoopGroup nettyEventLoopGroup();
 
   /**
    * @return the Netty {@code AddressResolverGroup} to use in a Netty {@code Bootstrap}
@@ -183,4 +236,10 @@ public interface VertxInternal extends Vertx {
 
   void removeCloseHook(Closeable hook);
 
+  /**
+   * @return whether virtual threads are available
+   */
+  static boolean isVirtualThreadAvailable() {
+    return VertxImpl.VIRTUAL_THREAD_FACTORY != null;
+  }
 }

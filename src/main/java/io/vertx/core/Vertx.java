@@ -11,7 +11,6 @@
 
 package io.vertx.core;
 
-import io.netty.channel.EventLoopGroup;
 import io.vertx.codegen.annotations.*;
 import io.vertx.core.datagram.DatagramSocket;
 import io.vertx.core.datagram.DatagramSocketOptions;
@@ -19,13 +18,10 @@ import io.vertx.core.dns.DnsClient;
 import io.vertx.core.dns.DnsClientOptions;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.file.FileSystem;
-import io.vertx.core.http.HttpClient;
-import io.vertx.core.http.HttpClientOptions;
-import io.vertx.core.http.HttpServer;
-import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.*;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.VertxBuilder;
-import io.vertx.core.impl.resolver.DnsResolverProvider;
+import io.vertx.core.dns.impl.DnsAddressResolverProvider;
 import io.vertx.core.metrics.Measured;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetClientOptions;
@@ -33,8 +29,12 @@ import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetServerOptions;
 import io.vertx.core.shareddata.SharedData;
 import io.vertx.core.spi.VerticleFactory;
+import io.vertx.core.spi.VertxMetricsFactory;
+import io.vertx.core.spi.VertxTracerFactory;
+import io.vertx.core.spi.cluster.ClusterManager;
 
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -66,6 +66,57 @@ import java.util.function.Supplier;
  */
 @VertxGen
 public interface Vertx extends Measured {
+
+  /**
+   * Return a builder for Vert.x instances which allows to specify SPI such as cluster manager, metrics or tracing.
+   *
+   * @return a Vert.x instance builder
+   */
+  static io.vertx.core.VertxBuilder builder() {
+    return new io.vertx.core.VertxBuilder() {
+      private VertxOptions options;
+      private ClusterManager clusterManager;
+      private VertxMetricsFactory metricsFactory;
+      private VertxTracerFactory tracerFactory;
+      @Override
+      public io.vertx.core.VertxBuilder with(VertxOptions options) {
+        this.options = options;
+        return this;
+      }
+      @Override
+      public io.vertx.core.VertxBuilder withMetrics(VertxMetricsFactory factory) {
+        this.metricsFactory = factory;
+        return this;
+      }
+      @Override
+      public io.vertx.core.VertxBuilder withTracer(VertxTracerFactory factory) {
+        this.tracerFactory = factory;
+        return this;
+      }
+      @Override
+      public io.vertx.core.VertxBuilder withClusterManager(ClusterManager clusterManager) {
+        this.clusterManager = clusterManager;
+        return this;
+      }
+      @Override
+      public Vertx build() {
+        VertxBuilder builder = new VertxBuilder(options != null ? options : new VertxOptions());
+        builder.metricsFactory(metricsFactory);
+        builder.tracerFactory(tracerFactory);
+        builder.init();
+        return builder.vertx();
+      }
+      @Override
+      public Future<Vertx> buildClustered() {
+        VertxBuilder builder = new VertxBuilder(options != null ? options : new VertxOptions());
+        builder.clusterManager(clusterManager);
+        builder.metricsFactory(metricsFactory);
+        builder.tracerFactory(tracerFactory);
+        builder.init();
+        return builder.clusteredVertx();
+      }
+    };
+  }
 
   /**
    * Creates a non clustered instance using default options.
@@ -166,12 +217,60 @@ public interface Vertx extends Measured {
   }
 
   /**
-   * Create a HTTP/HTTPS client using the specified options
+   * Create a WebSocket client using default options
+   *
+   * @return the client
+   */
+  default WebSocketClient createWebSocketClient() {
+    return createWebSocketClient(new WebSocketClientOptions());
+  }
+
+  /**
+   * Create a WebSocket client using the specified options
    *
    * @param options  the options to use
    * @return the client
    */
-  HttpClient createHttpClient(HttpClientOptions options);
+  WebSocketClient createWebSocketClient(WebSocketClientOptions options);
+
+  /**
+   * Provide a builder for {@link HttpClient}, it can be used to configure advanced
+   * HTTP client settings like a redirect handler or a connection handler.
+   * <p>
+   * Example usage: {@code HttpClient client = vertx.httpClientBuilder().with(options).withConnectHandler(conn -> ...).build()}
+   */
+  HttpClientBuilder httpClientBuilder();
+
+  /**
+   * Create a HTTP/HTTPS client using the specified client and pool options
+   *
+   * @param clientOptions  the client options to use
+   * @param poolOptions  the pool options to use
+   * @return the client
+   */
+  default HttpClient createHttpClient(HttpClientOptions clientOptions, PoolOptions poolOptions) {
+    return httpClientBuilder().with(clientOptions).with(poolOptions).build();
+  }
+
+  /**
+   * Create a HTTP/HTTPS client using the specified client options
+   *
+   * @param clientOptions  the options to use
+   * @return the client
+   */
+  default HttpClient createHttpClient(HttpClientOptions clientOptions) {
+    return createHttpClient(clientOptions, new PoolOptions());
+  }
+
+  /**
+   * Create a HTTP/HTTPS client using the specified pool options
+   *
+   * @param poolOptions  the pool options to use
+   * @return the client
+   */
+  default HttpClient createHttpClient(PoolOptions poolOptions) {
+    return createHttpClient(new HttpClientOptions(), poolOptions);
+  }
 
   /**
    * Create a HTTP/HTTPS client using default options
@@ -179,9 +278,8 @@ public interface Vertx extends Measured {
    * @return the client
    */
   default HttpClient createHttpClient() {
-    return createHttpClient(new HttpClientOptions());
+    return createHttpClient(new HttpClientOptions(), new PoolOptions());
   }
-
   /**
    * Create a datagram socket using the specified options
    *
@@ -228,7 +326,7 @@ public interface Vertx extends Measured {
   /**
    * Create a DNS client to connect to the DNS server configured by {@link VertxOptions#getAddressResolverOptions()}
    * <p>
-   * DNS client takes the first configured resolver address provided by {@link DnsResolverProvider#nameServerAddresses()}}
+   * DNS client takes the first configured resolver address provided by {@link DnsAddressResolverProvider#nameServerAddresses()}}
    *
    * @return the DNS client
    */
@@ -445,15 +543,11 @@ public interface Vertx extends Measured {
    * <p>
    * Executes the blocking code in the handler {@code blockingCodeHandler} using a thread from the worker pool.
    * <p>
-   * When the code is complete the handler {@code resultHandler} will be called with the result on the original context
-   * (e.g. on the original event loop of the caller).
-   * <p>
-   * A {@code Future} instance is passed into {@code blockingCodeHandler}. When the blocking code successfully completes,
-   * the handler should call the {@link Promise#complete} or {@link Promise#complete(Object)} method, or the {@link Promise#fail}
-   * method if it failed.
+   * The returned future will be completed with the result on the original context (i.e. on the original event loop of the caller)
+   * or failed when the handler throws an exception.
    * <p>
    * In the {@code blockingCodeHandler} the current context remains the original context and therefore any task
-   * scheduled in the {@code blockingCodeHandler} will be executed on the this context and not on the worker thread.
+   * scheduled in the {@code blockingCodeHandler} will be executed on this context and not on the worker thread.
    * <p>
    * The blocking code should block for a reasonable amount of time (i.e no more than a few seconds). Long blocking operations
    * or polling operations (i.e a thread that spin in a loop polling events in a blocking fashion) are precluded.
@@ -471,25 +565,19 @@ public interface Vertx extends Measured {
    * @param <T> the type of the result
    * @return a future completed when the blocking code is complete
    */
-  default <T> Future<@Nullable T> executeBlocking(Handler<Promise<T>> blockingCodeHandler, boolean ordered) {
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  default <T> Future<@Nullable T> executeBlocking(Callable<T> blockingCodeHandler, boolean ordered) {
     Context context = getOrCreateContext();
     return context.executeBlocking(blockingCodeHandler, ordered);
   }
 
   /**
-   * Like {@link #executeBlocking(Handler, boolean)} called with ordered = true.
-   */
-  default <T> Future<T> executeBlocking(Handler<Promise<T>> blockingCodeHandler) {
-    return executeBlocking(blockingCodeHandler, true);
-  }
-
-  /**
-   * Return the Netty EventLoopGroup used by Vert.x
-   *
-   * @return the EventLoopGroup
+   * Like {@link #executeBlocking(Callable, boolean)} called with ordered = true.
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  EventLoopGroup nettyEventLoopGroup();
+  default <T> Future<@Nullable T> executeBlocking(Callable<T> blockingCodeHandler) {
+    return executeBlocking(blockingCodeHandler, true);
+  }
 
   /**
    * Like {@link #createSharedWorkerExecutor(String, int)} but with the {@link VertxOptions#setWorkerPoolSize} {@code poolSize}.

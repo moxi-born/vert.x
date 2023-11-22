@@ -23,6 +23,7 @@ import io.netty.util.concurrent.GenericFutureListener;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.impl.PartialPooledByteBufAllocator;
+import io.vertx.core.http.ClientAuth;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.CloseSequence;
 import io.vertx.core.impl.VertxInternal;
@@ -37,7 +38,6 @@ import java.io.FileNotFoundException;
 import java.net.ConnectException;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 /**
@@ -58,7 +58,7 @@ class NetClientImpl implements NetClientInternal {
   private final VertxInternal vertx;
   private final NetClientOptions options;
   private final SSLHelper sslHelper;
-  private final AtomicReference<Future<SslChannelProvider>> sslChannelProvider = new AtomicReference<>();
+  private volatile ClientSSLOptions sslOptions;
   public final ChannelGroup channelGroup;
   private final TCPMetrics metrics;
   public ShutdownEvent closeEvent;
@@ -78,7 +78,7 @@ class NetClientImpl implements NetClientInternal {
     this.vertx = vertx;
     this.channelGroup = new DefaultChannelGroup(vertx.getAcceptorEventLoopGroup().next());
     this.options = new NetClientOptions(options);
-    this.sslHelper = new SSLHelper(options, options.getApplicationLayerProtocols());
+    this.sslHelper = new SSLHelper(SSLHelper.resolveEngineOptions(options.getSslEngineOptions(), options.isUseAlpn()));
     this.metrics = metrics;
     this.logEnabled = options.getLogActivity();
     this.idleTimeout = options.getIdleTimeout();
@@ -87,13 +87,14 @@ class NetClientImpl implements NetClientInternal {
     this.idleTimeoutUnit = options.getIdleTimeoutUnit();
     this.closeSequence = closeSequence1;
     this.proxyFilter = options.getNonProxyHosts() != null ? ProxyFilter.nonProxyHosts(options.getNonProxyHosts()) : ProxyFilter.DEFAULT_PROXY_FILTER;
+    this.sslOptions = options.getSslOptions();
   }
 
-  protected void initChannel(ChannelPipeline pipeline) {
+  protected void initChannel(ChannelPipeline pipeline, boolean ssl) {
     if (logEnabled) {
       pipeline.addLast("logging", new LoggingHandler(options.getActivityLogDataFormat()));
     }
-    if (options.isSsl() || !vertx.transport().supportFileRegion()) {
+    if (ssl || !vertx.transport().supportFileRegion()) {
       // only add ChunkedWriteHandler when SSL is enabled otherwise it is not needed as FileRegion is used.
       pipeline.addLast("chunkedWriter", new ChunkedWriteHandler());       // For large file / sendfile support
     }
@@ -114,18 +115,45 @@ class NetClientImpl implements NetClientInternal {
 
   @Override
   public Future<NetSocket> connect(SocketAddress remoteAddress) {
-    return connect(remoteAddress, (String) null);
+    return connect(remoteAddress, null);
   }
 
   @Override
   public Future<NetSocket> connect(SocketAddress remoteAddress, String serverName) {
-    return connect(vertx.getOrCreateContext(), remoteAddress, serverName);
+    ConnectOptions connectOptions = new ConnectOptions();
+    connectOptions.setRemoteAddress(remoteAddress);
+    String peerHost = remoteAddress.host();
+    if (peerHost != null && peerHost.endsWith(".")) {
+      peerHost= peerHost.substring(0, peerHost.length() - 1);
+    }
+    if (peerHost != null) {
+      connectOptions.setHost(peerHost);
+      connectOptions.setPort(remoteAddress.port());
+    }
+    connectOptions.setSsl(options.isSsl());
+    connectOptions.setSniServerName(serverName);
+    connectOptions.setSslOptions(sslOptions);
+    return connect(connectOptions);
   }
 
-  public Future<NetSocket> connect(ContextInternal context, SocketAddress remoteAddress, String serverName) {
+  @Override
+  public Future<NetSocket> connect(ConnectOptions connectOptions) {
+    ContextInternal context = vertx.getOrCreateContext();
     Promise<NetSocket> promise = context.promise();
-    connect(remoteAddress, serverName, promise, context);
+    connectInternal(connectOptions, options.isRegisterWriteHandler(), promise, context, options.getReconnectAttempts());
     return promise.future();
+  }
+
+  @Override
+  public void connectInternal(ConnectOptions connectOptions, Promise<NetSocket> connectHandler, ContextInternal context) {
+    ClientSSLOptions sslOptions = connectOptions.getSslOptions();
+    if (sslOptions == null) {
+      connectOptions.setSslOptions(this.sslOptions);
+      if (connectOptions.getSslOptions() == null) {
+        connectOptions.setSslOptions(new ClientSSLOptions()); // DO WE NEED THIS ??? AVOID NPE
+      }
+    }
+    connectInternal(connectOptions, false, connectHandler, context, 0);
   }
 
   private void doShutdown(Promise<Void> p) {
@@ -201,90 +229,53 @@ class NetClientImpl implements NetClientInternal {
   }
 
   @Override
-  public Future<Void> updateSSLOptions(SSLOptions options) {
-    Future<SslChannelProvider> fut = sslHelper.buildChannelProvider(new SSLOptions(options), vertx.getOrCreateContext());
-    fut.onSuccess(v -> sslChannelProvider.set(fut));
-    return fut.mapEmpty();
+  public Future<Boolean> updateSSLOptions(ClientSSLOptions options, boolean force) {
+    ContextInternal ctx = vertx.getOrCreateContext();
+    synchronized (this) {
+      this.sslOptions = options;
+    }
+    return ctx.succeededFuture(true);
   }
 
-  private void connect(SocketAddress remoteAddress, String serverName, Promise<NetSocket> connectHandler, ContextInternal ctx) {
+  private void connectInternal(ConnectOptions connectOptions,
+                               boolean registerWriteHandlers,
+                               Promise<NetSocket> connectHandler,
+                               ContextInternal context,
+                               int remainingAttempts) {
     if (closeSequence.started()) {
-      throw new IllegalStateException("Client is closed");
-    }
-    SocketAddress peerAddress = remoteAddress;
-    String peerHost = peerAddress.host();
-    if (peerHost != null && peerHost.endsWith(".")) {
-      peerAddress = SocketAddress.inetSocketAddress(peerAddress.port(), peerHost.substring(0, peerHost.length() - 1));
-    }
-    ProxyOptions proxyOptions = options.getProxyOptions();
-    if (proxyFilter != null) {
-      if (!proxyFilter.test(remoteAddress)) {
-        proxyOptions = null;
+      connectHandler.fail(new IllegalStateException("Client is closed"));
+    } else {
+      if (connectOptions.isSsl()) {
+        // We might be using an SslContext created from a plugged engine
+        ClientSSLOptions sslOptions = connectOptions.getSslOptions() != null ? connectOptions.getSslOptions() : new ClientSSLOptions();
+        Future<SslChannelProvider> fut;
+        fut = sslHelper.resolveSslChannelProvider(
+          sslOptions,
+          sslOptions.getHostnameVerificationAlgorithm(),
+          false,
+          ClientAuth.NONE,
+          sslOptions.getApplicationLayerProtocols(),
+          context);
+        fut.onComplete(ar -> {
+          if (ar.succeeded()) {
+            connectInternal2(connectOptions, sslOptions, ar.result(), registerWriteHandlers, connectHandler, context, remainingAttempts);
+          } else {
+            connectHandler.fail(ar.cause());
+          }
+        });
+      } else {
+        connectInternal2(connectOptions, connectOptions.getSslOptions(), null, registerWriteHandlers, connectHandler, context, remainingAttempts);
       }
     }
-    connectInternal(proxyOptions, remoteAddress, peerAddress, serverName, options.isSsl(), options.isUseAlpn(), options.isRegisterWriteHandler(), connectHandler, ctx, options.getReconnectAttempts());
   }
 
-  /**
-   * Open a socket to the {@code remoteAddress} server.
-   *
-   * @param proxyOptions optional proxy configuration
-   * @param remoteAddress the server address
-   * @param peerAddress the peer address (along with SSL)
-   * @param serverName the SNI server name (along with SSL)
-   * @param ssl whether to use SSL
-   * @param useAlpn wether to use ALPN (along with SSL)
-   * @param registerWriteHandlers whether to register event-bus write handlers
-   * @param connectHandler the promise to resolve with the connect result
-   * @param context the socket context
-   * @param remainingAttempts how many times reconnection is reattempted
-   */
-  public void connectInternal(ProxyOptions proxyOptions,
-                                SocketAddress remoteAddress,
-                                SocketAddress peerAddress,
-                                String serverName,
-                                boolean ssl,
-                                boolean useAlpn,
+  private void connectInternal2(ConnectOptions connectOptions,
+                                ClientSSLOptions sslOptions,
+                                SslChannelProvider sslChannelProvider,
                                 boolean registerWriteHandlers,
                                 Promise<NetSocket> connectHandler,
                                 ContextInternal context,
                                 int remainingAttempts) {
-    if (closeSequence.started()) {
-      connectHandler.fail(new IllegalStateException("Client is closed"));
-    } else {
-      Future<SslChannelProvider> fut;
-      while (true) {
-        fut = sslChannelProvider.get();
-        if (fut == null) {
-          fut = sslHelper.buildChannelProvider(options.getSslOptions(), context);
-          if (sslChannelProvider.compareAndSet(null, fut)) {
-            break;
-          }
-        } else {
-          break;
-        }
-      }
-      fut.onComplete(ar -> {
-        if (ar.succeeded()) {
-          connectInternal2(proxyOptions, remoteAddress, peerAddress, ar.result(), serverName, ssl, useAlpn, registerWriteHandlers, connectHandler, context, remainingAttempts);
-        } else {
-          connectHandler.fail(ar.cause());
-        }
-      });
-    }
-  }
-
-  private void connectInternal2(ProxyOptions proxyOptions,
-                              SocketAddress remoteAddress,
-                              SocketAddress peerAddress,
-                              SslChannelProvider sslChannelProvider,
-                              String serverName,
-                              boolean ssl,
-                              boolean useAlpn,
-                              boolean registerWriteHandlers,
-                              Promise<NetSocket> connectHandler,
-                              ContextInternal context,
-                              int remainingAttempts) {
     EventLoop eventLoop = context.nettyEventLoop();
 
     if (eventLoop.inEventLoop()) {
@@ -293,14 +284,50 @@ class NetClientImpl implements NetClientInternal {
       bootstrap.group(eventLoop);
       bootstrap.option(ChannelOption.ALLOCATOR, PartialPooledByteBufAllocator.INSTANCE);
 
+      SocketAddress remoteAddress = connectOptions.getRemoteAddress();
+      if (remoteAddress == null) {
+        String host = connectOptions.getHost();
+        Integer port = connectOptions.getPort();
+        if (host == null || port == null) {
+          throw new UnsupportedOperationException("handle me");
+        }
+        remoteAddress = SocketAddress.inetSocketAddress(port, host);
+      }
+
+      SocketAddress peerAddress = peerAddress(remoteAddress, connectOptions);
+
       vertx.transport().configure(options, remoteAddress.isDomainSocket(), bootstrap);
+
+      ProxyOptions proxyOptions = connectOptions.getProxyOptions();
+      if (proxyOptions == null) {
+        proxyOptions = options.getProxyOptions();
+      }
+      if (proxyFilter != null) {
+        if (!proxyFilter.test(remoteAddress)) {
+          proxyOptions = null;
+        }
+      }
 
       ChannelProvider channelProvider = new ChannelProvider(bootstrap, sslChannelProvider, context)
         .proxyOptions(proxyOptions);
 
-      channelProvider.handler(ch -> connected(context, ch, connectHandler, remoteAddress, sslChannelProvider, channelProvider.applicationProtocol(), registerWriteHandlers));
+      SocketAddress captured = remoteAddress;
 
-      io.netty.util.concurrent.Future<Channel> fut = channelProvider.connect(remoteAddress, peerAddress, serverName, ssl, useAlpn);
+      channelProvider.handler(ch -> connected(
+        context,
+        sslOptions,
+        ch,
+        connectHandler,
+        captured,
+        connectOptions.isSsl(),
+        channelProvider.applicationProtocol(),
+        registerWriteHandlers));
+      io.netty.util.concurrent.Future<Channel> fut = channelProvider.connect(
+        remoteAddress,
+        peerAddress,
+        connectOptions.getSniServerName(),
+        connectOptions.isSsl(),
+        sslOptions);
       fut.addListener((GenericFutureListener<io.netty.util.concurrent.Future<Channel>>) future -> {
         if (!future.isSuccess()) {
           Throwable cause = future.cause();
@@ -311,7 +338,12 @@ class NetClientImpl implements NetClientInternal {
               log.debug("Failed to create connection. Will retry in " + options.getReconnectInterval() + " milliseconds");
               //Set a timer to retry connection
               vertx.setTimer(options.getReconnectInterval(), tid ->
-                connectInternal(proxyOptions, remoteAddress, peerAddress, serverName, ssl, useAlpn, registerWriteHandlers, connectHandler, context, remainingAttempts == -1 ? remainingAttempts : remainingAttempts - 1)
+                connectInternal(
+                  connectOptions,
+                  registerWriteHandlers,
+                  connectHandler,
+                  context,
+                  remainingAttempts == -1 ? remainingAttempts : remainingAttempts - 1)
               );
             });
           } else {
@@ -320,14 +352,50 @@ class NetClientImpl implements NetClientInternal {
         }
       });
     } else {
-      eventLoop.execute(() -> connectInternal2(proxyOptions, remoteAddress, peerAddress, sslChannelProvider, serverName, ssl, useAlpn, registerWriteHandlers, connectHandler, context, remainingAttempts));
+      eventLoop.execute(() -> connectInternal2(connectOptions, sslOptions, sslChannelProvider, registerWriteHandlers, connectHandler, context, remainingAttempts));
     }
   }
 
-  private void connected(ContextInternal context, Channel ch, Promise<NetSocket> connectHandler, SocketAddress remoteAddress, SslChannelProvider sslChannelProvider, String applicationLayerProtocol, boolean registerWriteHandlers) {
+  private static SocketAddress peerAddress(SocketAddress remoteAddress, ConnectOptions connectOptions) {
+    if (!connectOptions.isSsl()) {
+      return null;
+    }
+    String peerHost = connectOptions.getHost();
+    Integer peerPort = connectOptions.getPort();
+    if (remoteAddress.isInetSocket()) {
+      if ((peerHost == null || peerHost.equals(remoteAddress.host()))
+        && (peerPort == null || peerPort.intValue() == remoteAddress.port())) {
+        return remoteAddress;
+      }
+      if (peerHost == null) {
+        peerHost = remoteAddress.host();;
+      }
+      if (peerPort == null) {
+        peerPort = remoteAddress.port();
+      }
+    }
+    return peerHost != null && peerPort != null ? SocketAddress.inetSocketAddress(peerPort, peerHost) : null;
+  }
+
+  private void connected(ContextInternal context,
+                         ClientSSLOptions sslOptions,
+                         Channel ch,
+                         Promise<NetSocket> connectHandler,
+                         SocketAddress remoteAddress,
+                         boolean ssl,
+                         String applicationLayerProtocol,
+                         boolean registerWriteHandlers) {
     channelGroup.add(ch);
-    initChannel(ch.pipeline());
-    VertxHandler<NetSocketImpl> handler = VertxHandler.create(ctx -> new NetSocketImpl(context, ctx, remoteAddress, sslChannelProvider, metrics, applicationLayerProtocol, registerWriteHandlers));
+    initChannel(ch.pipeline(), ssl);
+    VertxHandler<NetSocketImpl> handler = VertxHandler.create(ctx -> new NetSocketImpl(
+      context,
+      ctx,
+      remoteAddress,
+      sslHelper,
+      sslOptions,
+      metrics,
+      applicationLayerProtocol,
+      registerWriteHandlers));
     handler.removeHandler(NetSocketImpl::unregisterEventBusHandler);
     handler.addHandler(sock -> {
       if (metrics != null) {

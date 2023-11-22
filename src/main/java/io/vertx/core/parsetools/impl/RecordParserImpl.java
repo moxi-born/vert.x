@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2019 Contributors to the Eclipse Foundation
+ * Copyright (c) 2011-2023 Contributors to the Eclipse Foundation
  *
  * This program and the accompanying materials are made available under the
  * terms of the Eclipse Public License 2.0 which is available at
@@ -14,6 +14,7 @@ package io.vertx.core.parsetools.impl;
 import io.netty.buffer.Unpooled;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.impl.Arguments;
 import io.vertx.core.parsetools.RecordParser;
 import io.vertx.core.streams.ReadStream;
@@ -27,7 +28,7 @@ import java.util.Objects;
 public class RecordParserImpl implements RecordParser {
 
   // Empty and unmodifiable
-  private static final Buffer EMPTY_BUFFER = Buffer.buffer(Unpooled.EMPTY_BUFFER);
+  private static final Buffer EMPTY_BUFFER = BufferInternal.buffer(Unpooled.EMPTY_BUFFER);
 
   private Buffer buff = EMPTY_BUFFER;
   private int pos;            // Current position in buffer
@@ -277,10 +278,17 @@ public class RecordParserImpl implements RecordParser {
    * @param buffer  a chunk of data
    */
   public void handle(Buffer buffer) {
-    if (buff.length() == 0) {
-      buff = buffer;
-    } else {
-      buff.appendBuffer(buffer);
+    if (buffer.length() != 0) {
+      if (buff == EMPTY_BUFFER) {
+        // Copy the initial buffer instead of growing it.
+        // We cannot assume that we can modify the input,
+        // or that the buffer has enough capacity.
+        // For example, an HTTP client response sent over an encrypted connection
+        // emits un-pooled buffers with limited capacity.
+        buff = buffer.getBuffer(0, buffer.length());
+      } else {
+        buff.appendBuffer(buffer);
+      }
     }
     handleParsing();
     if (buff != null && maxRecordSize > 0 && buff.length() > maxRecordSize) {

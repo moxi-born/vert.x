@@ -204,14 +204,6 @@ You can instantiate more instances programmatically in your code:
 {@link examples.NetExamples#example11}
 ----
 
-or, you can simply deploy more instances of your server verticle by using the `-instances` option
-on the command line:
-
-[source]
-----
->  vertx run com.mycompany.MyVerticle -instances 10
-----
-
 Once you do this you will find the echo server works functionally identically to before, but all your cores on your
 server can be utilised and more work can be handled.
 
@@ -349,6 +341,22 @@ name. When using network activity logging there are a few things to keep in mind
 
 You should read the <<netty-logging>> section.
 
+=== Throttling inbound and outbound bandwidth of TCP connections
+
+TCP server (Net/Http) can be configured with traffic shaping options to enable bandwidth limiting. Both inbound and outbound
+bandwidth can be limited through {@link io.vertx.core.net.TrafficShapingOptions}. For NetServer, traffic shaping options can be set
+through {@link io.vertx.core.net.NetServerOptions} and for HttpServer it can be set through {@link io.vertx.core.http.HttpServerOptions}.
+
+[source,$lang]
+----
+{@link examples.NetExamples#configureTrafficShapingForNetServer}
+----
+
+[source,$lang]
+----
+{@link examples.NetExamples#configureTrafficShapingForHttpServer}
+----
+
 [[ssl]]
 === Configuring servers and clients to work with SSL/TLS
 
@@ -367,7 +375,7 @@ By default it is disabled.
 
 ==== Specifying key/certificate for the server
 
-SSL/TLS servers usually provide certificates to clients in order verify their identity to clients.
+SSL/TLS servers usually provide certificates to clients in order to verify their identity to clients.
 
 Certificates/keys can be configured for servers in several ways:
 
@@ -630,7 +638,11 @@ implement certificate rotation).
 {@link examples.NetExamples#updateSSLOptions}
 ----
 
-When the update succeeds the new SSL configuration is used, otherwise the previous configuration is kept.
+When the update succeeds the new SSL configuration is used, otherwise the previous configuration is preserved.
+
+NOTE: The options object is compared (using `equals`) against the existing options to prevent an update when the objects
+are equals since loading options can be costly. When object are equals, you can use the `force` parameter to force
+the update.
 
 ==== Self-signed certificates for testing and development purposes
 
@@ -799,13 +811,13 @@ Java TLS supports ALPN (Java 8 with the most recent versions).
 
 OpenSSL also supports (native) ALPN.
 
-OpenSSL requires to configure {@link io.vertx.core.net.TCPSSLOptions#setOpenSslEngineOptions(OpenSSLEngineOptions)}
+OpenSSL requires to configure {@link io.vertx.core.net.TCPSSLOptions#setSslEngineOptions(SSLEngineOptions)}
 and use http://netty.io/wiki/forked-tomcat-native.html[netty-tcnative] jar on the classpath. Using tcnative may require
 OpenSSL to be installed on your OS depending on the tcnative implementation.
 
 === Using a proxy for client connections
 
-The {@link io.vertx.core.net.NetClient} supports either a HTTP/1.x _CONNECT_, _SOCKS4a_ or _SOCKS5_ proxy.
+The {@link io.vertx.core.net.NetClient} supports either an HTTP/1.x _CONNECT_, _SOCKS4a_ or _SOCKS5_ proxy.
 
 The proxy can be configured in the {@link io.vertx.core.net.NetClientOptions} by setting a
 {@link io.vertx.core.net.ProxyOptions} object containing proxy type, hostname, port and optionally username and password.

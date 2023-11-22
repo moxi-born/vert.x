@@ -27,6 +27,7 @@ import io.vertx.core.file.FileSystem;
 import io.vertx.core.file.OpenOptions;
 import io.vertx.core.http.*;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.loadbalancing.LoadBalancer;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.ProxyType;
@@ -329,9 +330,22 @@ public class HTTPExamples {
     HttpClient client = vertx.createHttpClient(options);
   }
 
+  public void examplePoolConfiguration(Vertx vertx) {
+    PoolOptions options = new PoolOptions().setHttp1MaxSize(10);
+    HttpClient client = vertx.createHttpClient(options);
+  }
+
   public void exampleClientLogging(Vertx vertx) {
     HttpClientOptions options = new HttpClientOptions().setLogActivity(true);
     HttpClient client = vertx.createHttpClient(options);
+  }
+
+  public void exampleClientBuilder01(Vertx vertx, HttpClientOptions options) {
+    // Pretty much like vertx.createHttpClient(options)
+    HttpClient build = vertx
+      .httpClientBuilder()
+      .with(options)
+      .build();
   }
 
   public void example30(HttpClient client) {
@@ -543,6 +557,36 @@ public class HTTPExamples {
     }
 
     request.end();
+  }
+
+  public void clientIdleTimeout(HttpClient client, int port, String host, String uri, int timeoutMS) {
+    Future<Buffer> fut = client
+      .request(new RequestOptions()
+        .setHost(host)
+        .setPort(port)
+        .setURI(uri)
+        .setIdleTimeout(timeoutMS))
+      .compose(request -> request.send().compose(HttpClientResponse::body));
+  }
+
+  public void clientConnectTimeout(HttpClient client, int port, String host, String uri, int timeoutMS) {
+    Future<Buffer> fut = client
+      .request(new RequestOptions()
+        .setHost(host)
+        .setPort(port)
+        .setURI(uri)
+        .setConnectTimeout(timeoutMS))
+      .compose(request -> request.send().compose(HttpClientResponse::body));
+  }
+
+  public void clientTimeout(HttpClient client, int port, String host, String uri, int timeoutMS) {
+    Future<Buffer> fut = client
+      .request(new RequestOptions()
+        .setHost(host)
+        .setPort(port)
+        .setURI(uri)
+        .setTimeout(timeoutMS))
+      .compose(request -> request.send().compose(HttpClientResponse::body));
   }
 
   public void useRequestAsStream(HttpClientRequest request) {
@@ -799,23 +843,24 @@ public class HTTPExamples {
     throw new UnsupportedOperationException();
   }
 
-  public void exampleFollowRedirect03(HttpClient client) {
+  public void exampleFollowRedirect03(Vertx vertx) {
+    HttpClient client = vertx.httpClientBuilder()
+      .withRedirectHandler(response -> {
 
-    client.redirectHandler(response -> {
+        // Only follow 301 code
+        if (response.statusCode() == 301 && response.getHeader("Location") != null) {
 
-      // Only follow 301 code
-      if (response.statusCode() == 301 && response.getHeader("Location") != null) {
+          // Compute the redirect URI
+          String absoluteURI = resolveURI(response.request().absoluteURI(), response.getHeader("Location"));
 
-        // Compute the redirect URI
-        String absoluteURI = resolveURI(response.request().absoluteURI(), response.getHeader("Location"));
+          // Create a new ready to use request that the client will use
+          return Future.succeededFuture(new RequestOptions().setAbsoluteURI(absoluteURI));
+        }
 
-        // Create a new ready to use request that the client will use
-        return Future.succeededFuture(new RequestOptions().setAbsoluteURI(absoluteURI));
-      }
-
-      // We don't redirect
-      return null;
-    });
+        // We don't redirect
+        return null;
+      })
+      .build();
   }
 
   public void example50(HttpClient client) {
@@ -965,25 +1010,47 @@ public class HTTPExamples {
     });
   }
 
-  public void example54(HttpClient client) {
+
+  public void example54(Vertx vertx) {
+    WebSocketClient client = vertx.createWebSocketClient();
+
     client
-      .webSocket("/some-uri")
+      .connect(80, "example.com", "/some-uri")
       .onComplete(res -> {
         if (res.succeeded()) {
           WebSocket ws = res.result();
+          ws.textMessageHandler(msg -> {
+            // Handle msg
+          });
           System.out.println("Connected!");
         }
       });
   }
 
-  public void exampleWebSocketDisableOriginHeader(HttpClient client, String host, int port, String requestUri) {
+  public void example54_bis(Vertx vertx) {
+    WebSocketClient client = vertx.createWebSocketClient();
+
+    client
+      .webSocket()
+      .textMessageHandler(msg -> {
+        // Handle msg
+      })
+      .connect(80, "example.com", "/some-uri")
+      .onComplete(res -> {
+        if (res.succeeded()) {
+          WebSocket ws = res.result();
+        }
+      });
+  }
+
+  public void exampleWebSocketDisableOriginHeader(WebSocketClient client, String host, int port, String requestUri) {
     WebSocketConnectOptions options = new WebSocketConnectOptions()
       .setHost(host)
       .setPort(port)
       .setURI(requestUri)
       .setAllowOriginHeader(false);
     client
-      .webSocket(options)
+      .connect(options)
       .onComplete(res -> {
         if (res.succeeded()) {
           WebSocket ws = res.result();
@@ -992,14 +1059,14 @@ public class HTTPExamples {
       });
   }
 
-  public void exampleWebSocketSetOriginHeader(HttpClient client, String host, int port, String requestUri, String origin) {
+  public void exampleWebSocketSetOriginHeader(WebSocketClient client, String host, int port, String requestUri, String origin) {
     WebSocketConnectOptions options = new WebSocketConnectOptions()
       .setHost(host)
       .setPort(port)
       .setURI(requestUri)
       .addHeader(HttpHeaders.ORIGIN, origin);
     client
-      .webSocket(options)
+      .connect(options)
       .onComplete(res -> {
         if (res.succeeded()) {
           WebSocket ws = res.result();
@@ -1242,8 +1309,15 @@ public class HTTPExamples {
       @Override
       public void start() {
         // The client creates and use two event-loops for 4 instances
-        client = vertx.createHttpClient(new HttpClientOptions().setPoolEventLoopSize(2).setShared(true).setName("my-client"));
+        client = vertx.createHttpClient(new HttpClientOptions().setShared(true).setName("my-client"), new PoolOptions().setEventLoopSize(2));
       }
     }, new DeploymentOptions().setInstances(4));
+  }
+
+  public static void httpClientSideLoadBalancing(Vertx vertx) {
+    HttpClient client = vertx
+      .httpClientBuilder()
+      .withLoadBalancer(LoadBalancer.ROUND_ROBIN)
+      .build();
   }
 }

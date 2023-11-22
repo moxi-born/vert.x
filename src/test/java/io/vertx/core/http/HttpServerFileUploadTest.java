@@ -42,18 +42,11 @@ public abstract class HttpServerFileUploadTest extends HttpTestBase {
   public TemporaryFolder testFolder = new TemporaryFolder();
 
   protected File testDir;
-  private File tmp;
 
   @Override
   public void setUp() throws Exception {
     super.setUp();
     testDir = testFolder.newFolder();
-    if (USE_DOMAIN_SOCKETS) {
-      assertTrue("Native transport not enabled", USE_NATIVE_TRANSPORT);
-      tmp = TestUtils.tmpFile(".sock");
-      testAddress = SocketAddress.domainSocketAddress(tmp.getAbsolutePath());
-      requestOptions.setServer(testAddress);
-    }
   }
 
   @Test
@@ -331,19 +324,15 @@ public abstract class HttpServerFileUploadTest extends HttpTestBase {
             "\r\n";
           req.headers().set("content-length", "" + (pro + contentStr + epi).length());
           req.headers().set("content-type", "multipart/form-data; boundary=" + boundary);
-          if (abortClient || cancelStream) {
-            Future<Void> fut = req.write(pro + contentStr.substring(0, contentStr.length() / 2));
-            if (abortClient) {
-              fut.onComplete(onSuccess(v -> {
-                clientConn.set(req.connection());
-                checkClose.run();
-              }));
-            }
-          } else {
-            req.end(pro + contentStr + epi);
+          Future<Void> fut = req.end(pro + contentStr + epi);
+          if (abortClient) {
+            fut.onComplete(onSuccess(v -> {
+              clientConn.set(req.connection());
+              checkClose.run();
+            }));
           }
           if (abortClient) {
-            req.response().onComplete(onFailure(err -> complete()));
+            req.response().onComplete(ar -> complete());
           } else {
             req.response().onComplete(onSuccess(resp -> {
               assertEquals(200, resp.statusCode());

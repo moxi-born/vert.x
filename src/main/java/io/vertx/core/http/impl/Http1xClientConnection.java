@@ -13,38 +13,17 @@ package io.vertx.core.http.impl;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.*;
+import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPipeline;
+import io.netty.channel.EventLoop;
 import io.netty.handler.codec.DecoderResult;
 import io.netty.handler.codec.compression.Brotli;
 import io.netty.handler.codec.compression.ZlibCodecFactory;
-import io.netty.handler.codec.http.DefaultHttpContent;
-import io.netty.handler.codec.http.DefaultHttpHeaders;
-import io.netty.handler.codec.http.DefaultHttpRequest;
-import io.netty.handler.codec.http.DefaultLastHttpContent;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.HttpContentDecompressor;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.handler.codec.http.HttpObject;
-import io.netty.handler.codec.http.HttpRequest;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpUtil;
-import io.netty.handler.codec.http.LastHttpContent;
-import io.netty.handler.codec.http.websocketx.WebSocket07FrameDecoder;
-import io.netty.handler.codec.http.websocketx.WebSocket08FrameDecoder;
-import io.netty.handler.codec.http.websocketx.WebSocket13FrameDecoder;
-import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker;
-import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker00;
-import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker07;
-import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker08;
-import io.netty.handler.codec.http.websocketx.WebSocketClientHandshaker13;
-import io.netty.handler.codec.http.websocketx.WebSocketDecoderConfig;
+import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
-import io.netty.handler.codec.http.websocketx.WebSocketFrameDecoder;
-import io.netty.handler.codec.http.websocketx.WebSocketHandshakeException;
-import io.netty.handler.codec.http.websocketx.WebSocketVersion;
+import io.netty.handler.codec.http.websocketx.*;
 import io.netty.handler.codec.http.websocketx.extensions.WebSocketClientExtensionHandler;
 import io.netty.handler.codec.http.websocketx.extensions.WebSocketClientExtensionHandshaker;
 import io.netty.handler.codec.http.websocketx.extensions.compression.DeflateFrameClientExtensionHandshaker;
@@ -54,29 +33,20 @@ import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.GenericFutureListener;
-import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.MultiMap;
-import io.vertx.core.Promise;
-import io.vertx.core.VertxException;
+import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.HttpClientOptions;
-import io.vertx.core.http.HttpFrame;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpVersion;
-import io.vertx.core.http.StreamPriority;
-import io.vertx.core.http.WebSocket;
-import io.vertx.core.http.WebsocketVersion;
+import io.vertx.core.http.*;
 import io.vertx.core.http.impl.headers.HeadersAdaptor;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
-import io.vertx.core.net.impl.ShutdownEvent;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.core.net.impl.NetSocketImpl;
-import io.vertx.core.net.impl.NetSocketInternal;
-import io.vertx.core.net.impl.VertxHandler;
+import io.vertx.core.net.impl.*;
 import io.vertx.core.spi.metrics.ClientMetrics;
 import io.vertx.core.spi.metrics.HttpClientMetrics;
 import io.vertx.core.spi.tracing.SpanKind;
@@ -86,12 +56,7 @@ import io.vertx.core.streams.WriteStream;
 import io.vertx.core.streams.impl.InboundBuffer;
 
 import java.net.URI;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Deque;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.BiConsumer;
 
 import static io.netty.handler.codec.http.websocketx.WebSocketVersion.*;
@@ -115,10 +80,11 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     throw new IllegalStateException("Invalid object " + msg);
   };
 
-  private final HttpClientImpl client;
+  private final HttpClientBase client;
   private final HttpClientOptions options;
   private final boolean ssl;
   private final SocketAddress server;
+  private final HostAndPort authority;
   public final ClientMetrics metrics;
   private final HttpVersion version;
   private final long lowWaterMark;
@@ -139,32 +105,36 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
   private long expirationTimestamp;
   private int seq = 1;
   private long readWindow;
-  private long writeWindow;
-  private boolean writeOverflow;
   private Deque<WebSocketFrame> pendingFrames;
 
   private long lastResponseReceivedTimestamp;
 
   Http1xClientConnection(HttpVersion version,
-                         HttpClientImpl client,
-                         ChannelHandlerContext channel,
+                         HttpClientBase client,
+                         ChannelHandlerContext chctx,
                          boolean ssl,
                          SocketAddress server,
+                         HostAndPort authority,
                          ContextInternal context,
                          ClientMetrics metrics) {
-    super(context, channel);
+    super(context, chctx);
     this.client = client;
     this.options = client.options();
     this.ssl = ssl;
     this.server = server;
+    this.authority = authority;
     this.metrics = metrics;
     this.version = version;
     this.readWindow = 0L;
-    this.writeWindow = 0L;
-    this.highWaterMark = channel.channel().config().getWriteBufferHighWaterMark();
-    this.lowWaterMark = channel.channel().config().getWriteBufferLowWaterMark();
+    this.highWaterMark = chctx.channel().config().getWriteBufferHighWaterMark();
+    this.lowWaterMark = chctx.channel().config().getWriteBufferLowWaterMark();
     this.keepAliveTimeout = options.getKeepAliveTimeout();
     this.expirationTimestamp = expirationTimestampOf(keepAliveTimeout);
+  }
+
+  @Override
+  public HostAndPort authority() {
+    return authority;
   }
 
   @Override
@@ -194,16 +164,23 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     return options.isPipelining() ? options.getPipeliningLimit() : 1;
   }
 
+  @Override
+  public synchronized long activeStreams() {
+    return requests.isEmpty() && responses.isEmpty() ? 0 : 1;
+  }
+
   /**
-   * @return a raw {@code NetSocket} - for internal use
+   * @return a raw {@code NetSocket} - for internal use - must be called from event-loop
    */
   public NetSocketInternal toNetSocket() {
-    removeChannelHandlers();
-    NetSocketImpl socket = new NetSocketImpl(context, chctx, null, metrics(), false);
-    socket.metric(metric());
     evictionHandler.handle(null);
-    chctx.pipeline().replace("handler", "handler", VertxHandler.create(ctx -> socket));
-    return socket;
+    chctx.pipeline().replace("handler", "handler", VertxHandler.create(ctx -> {
+      NetSocketImpl socket = new NetSocketImpl(context, ctx, null, null, metrics(), false);
+      socket.metric(metric());
+      return socket;
+    }));
+    VertxHandler<NetSocketImpl> handler = (VertxHandler<NetSocketImpl>) chctx.pipeline().get(VertxHandler.class);
+    return handler.getConnection();
   }
 
   private HttpRequest createRequest(
@@ -229,7 +206,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     if (chunked) {
       HttpUtil.setTransferEncodingChunked(request, true);
     }
-    if (options.isTryUseCompression() && request.headers().get(ACCEPT_ENCODING) == null) {
+    if (options.isDecompressionSupported() && request.headers().get(ACCEPT_ENCODING) == null) {
       // if compression should be used but nothing is specified by the user support deflate and gzip.
       CharSequence acceptEncoding = determineCompressionAcceptEncoding();
       request.headers().set(ACCEPT_ENCODING, acceptEncoding);
@@ -285,7 +262,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
         stream.trace = tracer.sendRequest(stream.context, SpanKind.RPC, options.getTracingPolicy(), request, operation, headers, HttpUtils.CLIENT_HTTP_REQUEST_TAG_EXTRACTOR);
       }
     }
-    writeToChannel(nettyRequest, promise);
+    write(nettyRequest, false, promise);
     if (end) {
       endRequest(stream);
     }
@@ -297,12 +274,12 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     if (isConnect) {
       msg = buff != null ? buff : Unpooled.EMPTY_BUFFER;
       if (end) {
-        writeToChannel(msg, channelFuture()
+        write(msg, false, channelFuture()
           .addListener(listener)
           .addListener(v -> close())
         );
       } else {
-        writeToChannel(msg);
+        write(msg, false, voidPromise);
       }
     } else {
       if (end) {
@@ -314,7 +291,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
       } else {
         msg = new DefaultHttpContent(buff);
       }
-      writeToChannel(msg, listener);
+      write(msg, false, listener);
       if (end) {
         endRequest(s);
       }
@@ -383,6 +360,34 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     }
   }
 
+  private void writeHead(Stream stream, HttpRequestHead request, boolean chunked, ByteBuf buf, boolean end, boolean connect, PromiseInternal<Void> handler) {
+    writeToChannel(new MessageWrite() {
+      @Override
+      public void write() {
+        stream.request = request;
+        beginRequest(stream, request, chunked, buf, end, connect, handler);
+      }
+      @Override
+      public void cancel(Throwable cause) {
+        handler.fail(cause);
+      }
+    });
+  }
+
+  private void writeBuffer(Stream stream, ByteBuf buff, boolean end, PromiseInternal<Void> listener) {
+    writeToChannel(new MessageWrite() {
+      @Override
+      public void write() {
+        writeBuffer(stream, buff, end, (FutureListener<Void>)listener);
+      }
+
+      @Override
+      public void cancel(Throwable cause) {
+        listener.fail(cause);
+      }
+    });
+  }
+
   private abstract static class Stream {
 
     protected final Promise<HttpClientStream> promise;
@@ -391,10 +396,12 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
 
     private Object trace;
     private Object metric;
+    private HttpRequestHead request;
     private HttpResponseHead response;
     private boolean responseEnded;
     private long bytesRead;
     private long bytesWritten;
+
 
     Stream(ContextInternal context, Promise<HttpClientStream> promise, int id) {
       this.context = context;
@@ -416,7 +423,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     abstract void handleHead(HttpResponseHead response);
     abstract void handleChunk(Buffer buff);
     abstract void handleEnd(LastHttpContent trailer);
-    abstract void handleWritabilityChanged(boolean writable);
+    abstract void handleWriteQueueDrained(Void v);
     abstract void handleException(Throwable cause);
     abstract void handleClosed();
 
@@ -432,7 +439,6 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     private final InboundBuffer<Object> queue;
     private boolean reset;
     private boolean closed;
-    private HttpRequestHead request;
     private Handler<HttpResponseHead> headHandler;
     private Handler<Buffer> chunkHandler;
     private Handler<MultiMap> endHandler;
@@ -498,7 +504,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
 
     @Override
     public boolean writeQueueFull() {
-      return false;
+      return conn.writeQueueFull();
     }
 
     @Override
@@ -559,72 +565,23 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     @Override
     public Future<Void> writeHead(HttpRequestHead request, boolean chunked, ByteBuf buf, boolean end, StreamPriority priority, boolean connect) {
       PromiseInternal<Void> promise = context.promise();
-      writeHead(request, chunked, buf, end, connect, promise);
+      conn.writeHead(this, request, chunked, buf, end, connect, promise);
       return promise.future();
-    }
-
-    private void writeHead(HttpRequestHead request, boolean chunked, ByteBuf buf, boolean end, boolean connect, PromiseInternal<Void> handler) {
-      EventLoop eventLoop = conn.context.nettyEventLoop();
-      if (eventLoop.inEventLoop()) {
-        this.request = request;
-        conn.beginRequest(this, request, chunked, buf, end, connect, handler);
-      } else {
-        eventLoop.execute(() -> writeHead(request, chunked, buf, end, connect, handler));
-      }
     }
 
     @Override
     public Future<Void> writeBuffer(ByteBuf buff, boolean end) {
       if (buff != null || end) {
         PromiseInternal<Void> listener = context.promise();
-        writeBuffer(buff, end, listener);
+        conn.writeBuffer(this, buff, end, listener);
         return listener.future();
       } else {
         throw new IllegalStateException("???");
       }
     }
 
-    private void writeBuffer(ByteBuf buff, boolean end, FutureListener<Void> listener) {
-      FutureListener<Void> l;
-      if (buff != null) {
-        int size = buff.readableBytes();
-        l = future -> {
-          Handler<Void> drain;
-          synchronized (conn) {
-            conn.writeWindow -= size;
-            if (conn.writeOverflow && conn.writeWindow < conn.lowWaterMark) {
-              drain = drainHandler;
-              conn.writeOverflow = false;
-            } else {
-              drain = null;
-            }
-          }
-          if (drain != null) {
-            context.emit(drain);
-          }
-          if (listener != null) {
-            listener.operationComplete(future);
-          }
-        };
-        synchronized (conn) {
-          conn.writeWindow += size;
-          if (conn.writeWindow > conn.highWaterMark) {
-            conn.writeOverflow = true;
-          }
-        }
-      } else {
-        l = listener;
-      }
-      EventLoop eventLoop = conn.context.nettyEventLoop();
-      if (eventLoop.inEventLoop()) {
-        conn.writeBuffer(this, buff, end, l);
-      } else {
-        eventLoop.execute(() -> writeBuffer(buff, end, l));
-      }
-    }
-
     @Override
-    public void writeFrame(int type, int flags, ByteBuf payload) {
+    public Future<Void> writeFrame(int type, int flags, ByteBuf payload) {
       throw new IllegalStateException("Cannot write an HTTP/2 frame over an HTTP/1.x connection");
     }
 
@@ -635,9 +592,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
 
     @Override
     public boolean isNotWritable() {
-      synchronized (conn) {
-        return conn.writeWindow > conn.highWaterMark;
-      }
+      return conn.writeQueueFull();
     }
 
     @Override
@@ -684,7 +639,14 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     }
 
     @Override
-    void handleWritabilityChanged(boolean writable) {
+    void handleWriteQueueDrained(Void v) {
+      Handler<Void> handler;
+      synchronized (conn) {
+        handler = drainHandler;
+      }
+      if (handler != null) {
+        context.dispatch(handler);
+      }
     }
 
     void handleContinue() {
@@ -863,40 +825,13 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     } else {
       HttpRequestHead request;
       synchronized (this) {
-        request = ((StreamImpl)stream).request;
+        request = stream.request;
         stream.response = response;
-
         if (metrics != null) {
           metrics.responseBegin(stream.metric, response);
         }
-
-        //
-        if (response.statusCode != 100 && request.method != HttpMethod.CONNECT) {
-          // See https://tools.ietf.org/html/rfc7230#section-6.3
-          String responseConnectionHeader = response.headers.get(HttpHeaderNames.CONNECTION);
-          String requestConnectionHeader = request.headers != null ? request.headers.get(HttpHeaderNames.CONNECTION) : null;
-          // We don't need to protect against concurrent changes on forceClose as it only goes from false -> true
-          if (HttpHeaderValues.CLOSE.contentEqualsIgnoreCase(responseConnectionHeader) || HttpHeaderValues.CLOSE.contentEqualsIgnoreCase(requestConnectionHeader)) {
-            // In all cases, if we have a close connection option then we SHOULD NOT treat the connection as persistent
-            this.close = true;
-          } else if (response.version == HttpVersion.HTTP_1_0 && !HttpHeaderValues.KEEP_ALIVE.contentEqualsIgnoreCase(responseConnectionHeader)) {
-            // In the HTTP/1.0 case both request/response need a keep-alive connection header the connection to be persistent
-            // currently Vertx forces the Connection header if keepalive is enabled for 1.0
-            this.close = true;
-          }
-          String keepAliveHeader = response.headers.get(HttpHeaderNames.KEEP_ALIVE);
-          if (keepAliveHeader != null) {
-            int timeout = HttpUtils.parseKeepAliveHeaderTimeout(keepAliveHeader);
-            if (timeout != -1) {
-              this.keepAliveTimeout = timeout;
-            }
-          }
-        }
       }
-
-      //
       stream.handleHead(response);
-
       if (isConnect) {
         if ((request.method == HttpMethod.CONNECT &&
              response.statusCode == 200) || (
@@ -936,7 +871,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
   }
 
   private void handleResponseChunk(Stream stream, ByteBuf chunk) {
-    Buffer buff = Buffer.buffer(VertxHandler.safeBuffer(chunk));
+    Buffer buff = BufferInternal.buffer(VertxHandler.safeBuffer(chunk));
     int len = buff.length();
     receiveBytes(len);
     stream.bytesRead += len;
@@ -945,19 +880,44 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
 
   private void handleResponseEnd(Stream stream, LastHttpContent trailer) {
     boolean check;
+    HttpResponseHead response ;
     synchronized (this) {
-      if (stream.response == null) {
+      response = stream.response;
+      if (response == null) {
         // 100-continue
         return;
       }
       responses.pop();
-      close |= !options.isKeepAlive();
+      HttpRequestHead request = stream.request;
+      if ((request.method != HttpMethod.CONNECT && response.statusCode != 101)) {
+        // See https://tools.ietf.org/html/rfc7230#section-6.3
+        String responseConnectionHeader = response.headers.get(HttpHeaderNames.CONNECTION);
+        String requestConnectionHeader = request.headers != null ? request.headers.get(HttpHeaderNames.CONNECTION) : null;
+        // We don't need to protect against concurrent changes on forceClose as it only goes from false -> true
+        boolean close = !options.isKeepAlive();
+        if (HttpHeaderValues.CLOSE.contentEqualsIgnoreCase(responseConnectionHeader) || HttpHeaderValues.CLOSE.contentEqualsIgnoreCase(requestConnectionHeader)) {
+          // In all cases, if we have a close connection option then we SHOULD NOT treat the connection as persistent
+          close = true;
+        } else if (response.version == HttpVersion.HTTP_1_0 && !HttpHeaderValues.KEEP_ALIVE.contentEqualsIgnoreCase(responseConnectionHeader)) {
+          // In the HTTP/1.0 case both request/response need a keep-alive connection header the connection to be persistent
+          // currently Vertx forces the Connection header if keepalive is enabled for 1.0
+          close = true;
+        }
+        this.close = close;
+        String keepAliveHeader = response.headers.get(HttpHeaderNames.KEEP_ALIVE);
+        if (keepAliveHeader != null) {
+          int timeout = HttpUtils.parseKeepAliveHeaderTimeout(keepAliveHeader);
+          if (timeout != -1) {
+            this.keepAliveTimeout = timeout;
+          }
+        }
+      }
       stream.responseEnded = true;
       check = requests.peek() != stream;
     }
     VertxTracer tracer = context.tracer();
     if (tracer != null) {
-      tracer.receiveResponse(stream.context, stream.response, stream.trace, null, HttpUtils.CLIENT_RESPONSE_TAG_EXTRACTOR);
+      tracer.receiveResponse(stream.context, response, stream.trace, null, HttpUtils.CLIENT_RESPONSE_TAG_EXTRACTOR);
     }
     if (metrics != null) {
       metrics.responseEnd(stream.metric, stream.bytesRead);
@@ -974,17 +934,21 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     return client.metrics();
   }
 
-  synchronized Future<WebSocket> toWebSocket(
+  /**
+   * @return a future of a paused WebSocket
+   */
+  synchronized void toWebSocket(
     ContextInternal context,
     String requestURI,
     MultiMap headers,
     boolean allowOriginHeader,
+    WebSocketClientOptions options,
     WebsocketVersion vers,
     List<String> subProtocols,
     long handshakeTimeout,
     boolean registerWriteHandlers,
-    int maxWebSocketFrameSize) {
-    Promise<WebSocket> promise = context.promise();
+    int maxWebSocketFrameSize,
+    Promise<WebSocket> promise) {
     try {
       URI wsuri = new URI(requestURI);
       if (!wsuri.isAbsolute()) {
@@ -1012,7 +976,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
       }
 
       ChannelPipeline p = chctx.channel().pipeline();
-      ArrayList<WebSocketClientExtensionHandshaker> extensionHandshakers = initializeWebSocketExtensionHandshakers(client.options());
+      ArrayList<WebSocketClientExtensionHandshaker> extensionHandshakers = initializeWebSocketExtensionHandshakers(options);
       if (!extensionHandshakers.isEmpty()) {
         p.addBefore("handler", "webSocketsExtensionsHandler", new WebSocketClientExtensionHandler(
           extensionHandshakers.toArray(new WebSocketClientExtensionHandshaker[0])));
@@ -1044,9 +1008,9 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
             context,
             Http1xClientConnection.this,
             version != V00,
-            options.getWebSocketClosingTimeout(),
-            options.getMaxWebSocketFrameSize(),
-            options.getMaxWebSocketMessageSize(),
+            options.getClosingTimeout(),
+            options.getMaxFrameSize(),
+            options.getMaxMessageSize(),
             registerWriteHandlers);
           ws.headers(new HeadersAdaptor(future.getNow()));
           ws.subProtocol(handshaker.actualSubprotocol());
@@ -1056,7 +1020,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
           if (metrics != null) {
             ws.setMetric(metrics.connected(ws));
           }
-          promise.complete(ws);
+          ws.pause();
           Deque<WebSocketFrame> toResubmit = pendingFrames;
           if (toResubmit != null) {
             pendingFrames = null;
@@ -1065,6 +1029,7 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
               handleWsFrame(frame);
             }
           }
+          promise.complete(ws);
         } else {
           close();
           promise.fail(future.cause());
@@ -1073,7 +1038,6 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     } catch (Exception e) {
       handleException(e);
     }
-    return promise.future();
   }
 
   static WebSocketClientHandshaker newHandshaker(
@@ -1161,40 +1125,30 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     throw new WebSocketHandshakeException("Protocol version " + version + " not supported.");
   }
 
-  ArrayList<WebSocketClientExtensionHandshaker> initializeWebSocketExtensionHandshakers(HttpClientOptions options) {
+  ArrayList<WebSocketClientExtensionHandshaker> initializeWebSocketExtensionHandshakers(WebSocketClientOptions options) {
     ArrayList<WebSocketClientExtensionHandshaker> extensionHandshakers = new ArrayList<>();
-    if (options.getTryWebSocketDeflateFrameCompression()) {
-      extensionHandshakers.add(new DeflateFrameClientExtensionHandshaker(options.getWebSocketCompressionLevel(),
+    if (options.getTryUsePerFrameCompression()) {
+      extensionHandshakers.add(new DeflateFrameClientExtensionHandshaker(options.getCompressionLevel(),
         false));
     }
 
-    if (options.getTryUsePerMessageWebSocketCompression()) {
-      extensionHandshakers.add(new PerMessageDeflateClientExtensionHandshaker(options.getWebSocketCompressionLevel(),
+    if (options.getTryUsePerMessageCompression()) {
+      extensionHandshakers.add(new PerMessageDeflateClientExtensionHandshaker(options.getCompressionLevel(),
         ZlibCodecFactory.isSupportingWindowSizeAndMemLevel(), PerMessageDeflateServerExtensionHandshaker.MAX_WINDOW_SIZE,
-        options.getWebSocketCompressionAllowClientNoContext(), options.getWebSocketCompressionRequestServerNoContext()));
+        options.getCompressionAllowClientNoContext(), options.getCompressionRequestServerNoContext()));
     }
 
     return extensionHandshakers;
   }
 
   @Override
-  public  void handleInterestedOpsChanged() {
-    boolean writable = !isNotWritable();
-    ContextInternal context;
-    Handler<Boolean> handler;
-    synchronized (this) {
-      Stream current = requests.peek();
-      if (current != null) {
-        context = current.context;
-        handler = current::handleWritabilityChanged;
-      } else if (webSocket != null) {
-        context = webSocket.context;
-        handler = webSocket::handleWritabilityChanged;
-      } else {
-        return;
-      }
+  protected void writeQueueDrained() {
+    Stream s = requests.peek();
+    if (s != null) {
+      s.context.execute(s::handleWriteQueueDrained);
+    } else {
+      super.writeQueueDrained();
     }
-    context.execute(writable, handler);
   }
 
   protected void handleClosed() {
@@ -1268,6 +1222,11 @@ public class Http1xClientConnection extends Http1xConnectionBase<WebSocketImpl> 
     for (Stream stream : allStreams) {
       stream.handleException(e);
     }
+  }
+
+  @Override
+  public Future<HttpClientRequest> createRequest(ContextInternal context) {
+    return ((HttpClientImpl)client).createRequest(this, context);
   }
 
   @Override

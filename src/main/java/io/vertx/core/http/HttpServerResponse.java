@@ -12,11 +12,11 @@
 package io.vertx.core.http;
 
 import io.vertx.codegen.annotations.*;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.core.streams.WriteStream;
 
@@ -228,8 +228,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * Must only be used if the request contains an "Expect:100-Continue" header
    * @return a reference to this, so the API can be used fluently
    */
-  @Fluent
-  HttpServerResponse writeContinue();
+  Future<Void> writeContinue();
 
   /**
    * Used to write an interim 103 Early Hints response to return some HTTP headers before the final HTTP message.
@@ -359,11 +358,6 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
   Future<Void> sendFile(String filename, long offset, long length);
 
   /**
-   * Close the underlying TCP connection corresponding to the request.
-   */
-  void close();
-
-  /**
    * @return has the response already ended?
    */
   boolean ended();
@@ -421,7 +415,7 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * Like {@link #push(HttpMethod, String, String, MultiMap)} with the host copied from the current request.
    */
   default Future<HttpServerResponse> push(HttpMethod method, String path, MultiMap headers) {
-    return push(method, null, path, headers);
+    return push(method, (HostAndPort) null, path, headers);
   }
 
   /**
@@ -443,11 +437,32 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * Push can be sent only for peer initiated streams and if the response is not ended.
    *
    * @param method the method of the promised request
-   * @param host the host of the promised request
+   * @param authority the authority of the promised request
    * @param path the path of the promised request
    * @param headers the headers of the promised request
    * @return a future notified when the response can be written
    */
+  Future<HttpServerResponse> push(HttpMethod method, HostAndPort authority, String path, MultiMap headers);
+
+  /**
+   * Push a response to the client.<p/>
+   *
+   * The {@code handler} will be notified with a <i>success</i> when the push can be sent and with
+   * a <i>failure</i> when the client has disabled push or reset the push before it has been sent.<p/>
+   *
+   * The {@code handler} may be queued if the client has reduced the maximum number of streams the server can push
+   * concurrently.<p/>
+   *
+   * Push can be sent only for peer initiated streams and if the response is not ended.
+   *
+   * @param method the method of the promised request
+   * @param host the host of the promised request
+   * @param path the path of the promised request
+   * @param headers the headers of the promised request
+   * @return a future notified when the response can be written
+   * @deprecated instead use {@link #push(HttpMethod, HostAndPort, String, MultiMap)}
+   */
+  @Deprecated
   Future<HttpServerResponse> push(HttpMethod method, String host, String path, MultiMap headers);
 
   /**
@@ -482,16 +497,14 @@ public interface HttpServerResponse extends WriteStream<Buffer> {
    * @param payload the frame payload
    * @return a reference to this, so the API can be used fluently
    */
-  @Fluent
-  HttpServerResponse writeCustomFrame(int type, int flags, Buffer payload);
+  Future<Void> writeCustomFrame(int type, int flags, Buffer payload);
 
   /**
    * Like {@link #writeCustomFrame(int, int, Buffer)} but with an {@link HttpFrame}.
    *
    * @param frame the frame to write
    */
-  @Fluent
-  default HttpServerResponse writeCustomFrame(HttpFrame frame) {
+  default Future<Void> writeCustomFrame(HttpFrame frame) {
     return writeCustomFrame(frame.type(), frame.flags(), frame.payload());
   }
 

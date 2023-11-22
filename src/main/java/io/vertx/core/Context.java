@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2019 Contributors to the Eclipse Foundation
+ * Copyright (c) 2011-2023 Contributors to the Eclipse Foundation
  *
  * This program and the accompanying materials are made available under the
  * terms of the Eclipse Public License 2.0 which is available at
@@ -16,10 +16,11 @@ import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.Nullable;
 import io.vertx.codegen.annotations.VertxGen;
 import io.vertx.core.impl.VertxThread;
-import io.vertx.core.impl.launcher.VertxCommandLauncher;
 import io.vertx.core.json.JsonObject;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Callable;
 
 /**
  * The execution context of a {@link io.vertx.core.Handler} execution.
@@ -45,10 +46,10 @@ import java.util.List;
  * of the verticle.
  * <p>
  * This means (in the case of a standard verticle) that the verticle code will always be executed with the exact same
- * thread, so you don't have to worry about multi-threaded acccess to the verticle state and you can code your application
+ * thread, so you don't have to worry about multithreaded acccess to the verticle state, and you can code your application
  * as single threaded.
  * <p>
- * This class also allows arbitrary data to be {@link #put} and {@link #get} on the context so it can be shared easily
+ * This class also allows arbitrary data to be {@link #put} and {@link #get} on the context, so it can be shared easily
  * amongst different handlers of, for example, a verticle instance.
  * <p>
  * This class also provides {@link #runOnContext} which allows an action to be executed asynchronously using the same context.
@@ -105,14 +106,10 @@ public interface Context {
    * <p>
    * Executes the blocking code in the handler {@code blockingCodeHandler} using a thread from the worker pool.
    * <p>
-   * When the code is complete the handler {@code resultHandler} will be called with the result on the original context
-   * (e.g. on the original event loop of the caller).
+   * The returned future will be completed with the result on the original context (i.e. on the original event loop of the caller)
+   * or failed when the handler throws an exception.
    * <p>
-   * A {@code Future} instance is passed into {@code blockingCodeHandler}. When the blocking code successfully completes,
-   * the handler should call the {@link Promise#complete} or {@link Promise#complete(Object)} method, or the {@link Promise#fail}
-   * method if it failed.
-   * <p>
-   * The blocking code should block for a reasonable amount of time (i.e no more than a few seconds). Long blocking operations
+   * The blocking code should block for a reasonable amount of time (i.e. no more than a few seconds). Long blocking operations
    * or polling operations (i.e a thread that spin in a loop polling events in a blocking fashion) are precluded.
    * <p>
    * When the blocking operation lasts more than the 10 seconds, a message will be printed on the console by the
@@ -128,15 +125,17 @@ public interface Context {
    * @param <T> the type of the result
    * @return a future completed when the blocking code is complete
    */
-  <T> Future<@Nullable T> executeBlocking(Handler<Promise<T>> blockingCodeHandler, boolean ordered);
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  <T> Future<@Nullable T> executeBlocking(Callable<T> blockingCodeHandler, boolean ordered);
 
   /**
-   * Invoke {@link #executeBlocking(Handler, boolean)} with order = true.
+   * Invoke {@link #executeBlocking(Callable, boolean)} with order = true.
    * @param blockingCodeHandler  handler representing the blocking code to run
    * @param <T> the type of the result
    * @return a future completed when the blocking code is complete
    */
-  default <T> Future<T> executeBlocking(Handler<Promise<T>> blockingCodeHandler) {
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  default <T> Future<@Nullable T> executeBlocking(Callable<T> blockingCodeHandler) {
     return executeBlocking(blockingCodeHandler, true);
   }
 
@@ -156,33 +155,40 @@ public interface Context {
   @Nullable JsonObject config();
 
   /**
-   * The process args
+   * @return an empty list
+   * @deprecated As of version 5, Vert.x is no longer tightly coupled to the CLI
    */
+  @Deprecated
   default List<String> processArgs() {
-    return VertxCommandLauncher.getProcessArguments();
+    return Collections.emptyList();
   }
 
   /**
    * Is the current context an event loop context?
    * <p>
-   * NOTE! when running blocking code using {@link io.vertx.core.Vertx#executeBlocking(Handler, Handler)} from a
+   * NOTE! when running blocking code using {@link io.vertx.core.Vertx#executeBlocking(Callable)} from a
    * standard (not worker) verticle, the context will still an event loop context and this {@link this#isEventLoopContext()}
    * will return true.
    *
-   * @return true if  false otherwise
+   * @return {@code true} if the current context is an event-loop context, {@code false} otherwise
    */
   boolean isEventLoopContext();
 
   /**
    * Is the current context a worker context?
    * <p>
-   * NOTE! when running blocking code using {@link io.vertx.core.Vertx#executeBlocking(Handler, Handler)} from a
+   * NOTE! when running blocking code using {@link io.vertx.core.Vertx#executeBlocking(Callable)} from a
    * standard (not worker) verticle, the context will still an event loop context and this {@link this#isWorkerContext()}
    * will return false.
    *
-   * @return true if the current context is a worker context, false otherwise
+   * @return {@code true} if the current context is a worker context, {@code false} otherwise
    */
   boolean isWorkerContext();
+
+  /**
+   * @return the context threading model
+   */
+  ThreadingModel threadingModel();
 
   /**
    * Get some data from the context.

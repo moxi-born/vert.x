@@ -23,14 +23,15 @@ import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
+import io.netty.handler.traffic.GlobalTrafficShapingHandler;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.vertx.core.Handler;
 import io.vertx.core.http.HttpServerOptions;
-import io.vertx.core.http.impl.cgbystrom.FlashPolicyHandler;
 import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.impl.EventLoopContext;
 import io.vertx.core.impl.VertxInternal;
+import io.vertx.core.net.SSLOptions;
+import io.vertx.core.net.ServerSSLOptions;
 import io.vertx.core.net.impl.*;
 import io.vertx.core.spi.metrics.HttpServerMetrics;
 
@@ -46,9 +47,9 @@ import java.util.function.Supplier;
  *
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
  */
-public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider> {
+public class HttpServerWorker implements TCPServerBase.Worker {
 
-  final EventLoopContext context;
+  final ContextInternal context;
   private final Supplier<ContextInternal> streamContextSupplier;
   private final VertxInternal vertx;
   private final HttpServerImpl server;
@@ -60,8 +61,9 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
   private final Handler<Throwable> exceptionHandler;
   private final CompressionOptions[] compressionOptions;
   private final Function<String, String> encodingDetector;
+  private final GlobalTrafficShapingHandler trafficShapingHandler;
 
-  public HttpServerWorker(EventLoopContext context,
+  public HttpServerWorker(ContextInternal context,
                           Supplier<ContextInternal> streamContextSupplier,
                           HttpServerImpl server,
                           VertxInternal vertx,
@@ -69,7 +71,8 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
                           String serverOrigin,
                           boolean disableH2C,
                           Handler<HttpServerConnection> connectionHandler,
-                          Handler<Throwable> exceptionHandler) {
+                          Handler<Throwable> exceptionHandler,
+                          GlobalTrafficShapingHandler trafficShapingHandler) {
 
     CompressionOptions[] compressionOptions = null;
     if (options.isCompressionSupported()) {
@@ -94,10 +97,11 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
     this.exceptionHandler = exceptionHandler;
     this.compressionOptions = compressionOptions;
     this.encodingDetector = compressionOptions != null ? new EncodingDetector(compressionOptions)::determineEncoding : null;
+    this.trafficShapingHandler = trafficShapingHandler;
   }
 
   @Override
-  public void accept(Channel ch, SslChannelProvider sslChannelProvider) {
+  public void accept(Channel ch, SslChannelProvider sslChannelProvider, SSLHelper sslHelper, ServerSSLOptions sslOptions) {
     if (HAProxyMessageCompletionHandler.canUseProxyProtocol(options.isUseProxyProtocol())) {
       IdleStateHandler idle;
       io.netty.util.concurrent.Promise<Channel> p = ch.eventLoop().newPromise();
@@ -113,21 +117,21 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
           if (idle != null) {
             ch.pipeline().remove(idle);
           }
-          configurePipeline(future.getNow(), sslChannelProvider);
+          configurePipeline(future.getNow(), sslChannelProvider, sslHelper);
         } else {
           //No need to close the channel.HAProxyMessageDecoder already did
           handleException(future.cause());
         }
       });
     } else {
-      configurePipeline(ch, sslChannelProvider);
+      configurePipeline(ch, sslChannelProvider, sslHelper);
     }
   }
 
-  private void configurePipeline(Channel ch, SslChannelProvider sslChannelProvider) {
+  private void configurePipeline(Channel ch, SslChannelProvider sslChannelProvider, SSLHelper sslHelper) {
     ChannelPipeline pipeline = ch.pipeline();
     if (options.isSsl()) {
-      pipeline.addLast("ssl", sslChannelProvider.createServerHandler());
+      pipeline.addLast("ssl", sslChannelProvider.createServerHandler(options.isUseAlpn(), options.getSslHandshakeTimeout(), options.getSslHandshakeTimeoutUnit()));
       ChannelPromise p = ch.newPromise();
       pipeline.addLast("handshaker", new SslHandshakeCompletionHandler(p));
       p.addListener(future -> {
@@ -138,10 +142,10 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
             if ("h2".equals(protocol)) {
               handleHttp2(ch);
             } else {
-              handleHttp1(ch, sslChannelProvider);
+              handleHttp1(ch, sslChannelProvider, sslHelper);
             }
           } else {
-            handleHttp1(ch, sslChannelProvider);
+            handleHttp1(ch, sslChannelProvider, sslHelper);
           }
         } else {
           handleException(future.cause());
@@ -149,7 +153,7 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
       });
     } else {
       if (disableH2C) {
-        handleHttp1(ch, sslChannelProvider);
+        handleHttp1(ch, sslChannelProvider, sslHelper);
       } else {
         IdleStateHandler idle;
         int idleTimeout = options.getIdleTimeout();
@@ -173,7 +177,7 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
             if (h2c) {
               handleHttp2(ctx.channel());
             } else {
-              handleHttp1(ch, sslChannelProvider);
+              handleHttp1(ch, sslChannelProvider, sslHelper);
             }
           }
 
@@ -192,14 +196,17 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
         });
       }
     }
+    if (trafficShapingHandler != null) {
+      pipeline.addFirst("globalTrafficShaping", trafficShapingHandler);
+    }
   }
 
   private void handleException(Throwable cause) {
     context.emit(cause, exceptionHandler);
   }
 
-  private void handleHttp1(Channel ch, SslChannelProvider sslChannelProvider) {
-    configureHttp1OrH2C(ch.pipeline(), sslChannelProvider);
+  private void handleHttp1(Channel ch, SslChannelProvider sslChannelProvider, SSLHelper sslHelper) {
+    configureHttp1OrH2C(ch.pipeline(), sslChannelProvider, sslHelper);
   }
 
   private void sendServiceUnavailable(Channel ch) {
@@ -230,11 +237,14 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
     }
   }
 
-  VertxHttp2ConnectionHandler<Http2ServerConnection> buildHttp2ConnectionHandler(EventLoopContext ctx, Handler<HttpServerConnection> handler_) {
+  VertxHttp2ConnectionHandler<Http2ServerConnection> buildHttp2ConnectionHandler(ContextInternal ctx, Handler<HttpServerConnection> handler_) {
     HttpServerMetrics metrics = (HttpServerMetrics) server.getMetrics();
+    int maxRstFramesPerWindow = options.getHttp2RstFloodMaxRstFramePerWindow();
+    int secondsPerWindow = (int)options.getHttp2RstFloodWindowDurationTimeUnit().toSeconds(options.getHttp2RstFloodWindowDuration());
     VertxHttp2ConnectionHandler<Http2ServerConnection> handler = new VertxHttp2ConnectionHandlerBuilder<Http2ServerConnection>()
       .server(true)
       .useCompression(compressionOptions)
+      .decoderEnforceMaxRstFramesPerWindow(maxRstFramesPerWindow, secondsPerWindow)
       .useDecompression(options.isDecompressionSupported())
       .initialSettings(options.getInitialSettings())
       .connectionFactory(connHandler -> {
@@ -255,12 +265,9 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
     return handler;
   }
 
-  private void configureHttp1OrH2C(ChannelPipeline pipeline, SslChannelProvider sslChannelProvider) {
+  private void configureHttp1OrH2C(ChannelPipeline pipeline, SslChannelProvider sslChannelProvider, SSLHelper sslHelper) {
     if (logEnabled) {
       pipeline.addLast("logging", new LoggingHandler(options.getActivityLogDataFormat()));
-    }
-    if (HttpServerImpl.USE_FLASH_POLICY_HANDLER) {
-      pipeline.addLast("flashpolicy", new FlashPolicyHandler());
     }
     pipeline.addLast("httpDecoder", new VertxHttpRequestDecoder(options));
     pipeline.addLast("httpEncoder", new VertxHttpResponseEncoder());
@@ -270,7 +277,7 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
     if (options.isCompressionSupported()) {
       pipeline.addLast("deflater", new HttpChunkContentCompressor(compressionOptions));
     }
-    if (options.isSsl() || options.isCompressionSupported() || !vertx.transport().supportFileRegion()) {
+    if (options.isSsl() || options.isCompressionSupported() || !vertx.transport().supportFileRegion() || trafficShapingHandler != null) {
       // only add ChunkedWriteHandler when SSL is enabled otherwise it is not needed as FileRegion is used.
       pipeline.addLast("chunkedWriter", new ChunkedWriteHandler());       // For large file / sendfile support
     }
@@ -281,13 +288,13 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
       pipeline.addLast("idle", new IdleStateHandler(readIdleTimeout, writeIdleTimeout, idleTimeout, options.getIdleTimeoutUnit()));
     }
     if (disableH2C) {
-      configureHttp1(pipeline, sslChannelProvider);
+      configureHttp1(pipeline, sslChannelProvider, sslHelper);
     } else {
-      pipeline.addLast("h2c", new Http1xUpgradeToH2CHandler(this, sslChannelProvider, options.isCompressionSupported(), options.isDecompressionSupported()));
+      pipeline.addLast("h2c", new Http1xUpgradeToH2CHandler(this, sslChannelProvider, sslHelper, options.isCompressionSupported(), options.isDecompressionSupported()));
     }
   }
 
-  void configureHttp1(ChannelPipeline pipeline, SslChannelProvider sslChannelProvider) {
+  void configureHttp1(ChannelPipeline pipeline, SslChannelProvider sslChannelProvider, SSLHelper sslHelper) {
     if (!server.requestAccept()) {
       sendServiceUnavailable(pipeline.channel());
       return;
@@ -297,6 +304,7 @@ public class HttpServerWorker implements BiConsumer<Channel, SslChannelProvider>
       Http1xServerConnection conn = new Http1xServerConnection(
         streamContextSupplier,
         sslChannelProvider,
+        sslHelper,
         options,
         chctx,
         context,

@@ -28,7 +28,7 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.http.*;
 import io.vertx.core.impl.ContextInternal;
-import io.vertx.core.impl.EventLoopContext;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.spi.metrics.HttpServerMetrics;
 
 import java.net.URI;
@@ -54,7 +54,7 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
   private VertxHttp2Stream upgraded;
 
   Http2ServerConnection(
-    EventLoopContext context,
+    ContextInternal context,
     Supplier<ContextInternal> streamContextSupplier,
     String serverOrigin,
     VertxHttp2ConnectionHandler connHandler,
@@ -108,6 +108,18 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
       }
       if (uri.getRawUserInfo() != null) {
         return true;
+      }
+      CharSequence host = headers.get(HttpHeaders.HOST);
+      if (host != null) {
+        URI hostURI;
+        try {
+          hostURI = new URI(null, host.toString(), null, null, null);
+        } catch (URISyntaxException e) {
+          return true;
+        }
+        if (uri.getRawUserInfo() != null || !uri.getAuthority().equals(hostURI.getAuthority())) {
+          return true;
+        }
       }
     }
     return false;
@@ -176,22 +188,24 @@ public class Http2ServerConnection extends Http2ConnectionBase implements HttpSe
     }
   }
 
-  void sendPush(int streamId, String host, HttpMethod method, MultiMap headers, String path, StreamPriority streamPriority, Promise<HttpServerResponse> promise) {
+  void sendPush(int streamId, HostAndPort authority, HttpMethod method, MultiMap headers, String path, StreamPriority streamPriority, Promise<HttpServerResponse> promise) {
     EventLoop eventLoop = context.nettyEventLoop();
     if (eventLoop.inEventLoop()) {
-      doSendPush(streamId, host, method, headers, path, streamPriority, promise);
+      doSendPush(streamId, authority, method, headers, path, streamPriority, promise);
     } else {
-      eventLoop.execute(() -> doSendPush(streamId, host, method, headers, path, streamPriority, promise));
+      eventLoop.execute(() -> doSendPush(streamId, authority, method, headers, path, streamPriority, promise));
     }
   }
 
-  private synchronized void doSendPush(int streamId, String host, HttpMethod method, MultiMap headers, String path, StreamPriority streamPriority, Promise<HttpServerResponse> promise) {
+  private synchronized void doSendPush(int streamId, HostAndPort authority, HttpMethod method, MultiMap headers, String path, StreamPriority streamPriority, Promise<HttpServerResponse> promise) {
+    boolean ssl = isSsl();
     Http2Headers headers_ = new DefaultHttp2Headers();
     headers_.method(method.name());
     headers_.path(path);
-    headers_.scheme(isSsl() ? "https" : "http");
-    if (host != null) {
-      headers_.authority(host);
+    headers_.scheme(ssl ? "https" : "http");
+    if (authority != null) {
+      String s = (ssl && authority.port() == 443) || (!ssl && authority.port() == 80) || authority.port() <= 0 ? authority.host() : authority.host() + ':' + authority.port();
+      headers_.authority(s);
     }
     if (headers != null) {
       headers.forEach(header -> headers_.add(header.getKey(), header.getValue()));

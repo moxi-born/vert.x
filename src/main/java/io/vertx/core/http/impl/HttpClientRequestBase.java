@@ -12,17 +12,14 @@
 package io.vertx.core.http.impl;
 
 import io.netty.handler.codec.http2.Http2Error;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
-import io.vertx.core.http.HttpClientRequest;
-import io.vertx.core.http.HttpClientResponse;
-import io.vertx.core.http.HttpMethod;
-import io.vertx.core.http.StreamResetException;
+import io.vertx.core.http.*;
 import io.vertx.core.impl.ContextInternal;
+import io.vertx.core.impl.NoStackTraceTimeoutException;
 import io.vertx.core.impl.future.PromiseInternal;
-import io.vertx.core.net.SocketAddress;
+import io.vertx.core.net.HostAndPort;
 
 import java.util.Objects;
 
@@ -31,14 +28,11 @@ import java.util.Objects;
  */
 public abstract class HttpClientRequestBase implements HttpClientRequest {
 
-  protected final HttpClientImpl client;
   protected final ContextInternal context;
   protected final HttpClientStream stream;
-  protected final SocketAddress server;
   protected final boolean ssl;
   private io.vertx.core.http.HttpMethod method;
-  private String host;
-  private int port;
+  private HostAndPort authority;
   private String uri;
   private String path;
   private String query;
@@ -47,18 +41,16 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
   private long currentTimeoutTimerId = -1;
   private long currentTimeoutMs;
   private long lastDataReceived;
+  private Throwable reset;
 
-  HttpClientRequestBase(HttpClientImpl client, HttpClientStream stream, PromiseInternal<HttpClientResponse> responsePromise, boolean ssl, HttpMethod method, SocketAddress server, String host, int port, String uri) {
-    this.client = client;
+  HttpClientRequestBase(HttpClientStream stream, PromiseInternal<HttpClientResponse> responsePromise, HttpMethod method, String uri) {
     this.stream = stream;
     this.responsePromise = responsePromise;
     this.context = responsePromise.context();
     this.uri = uri;
     this.method = method;
-    this.server = server;
-    this.host = host;
-    this.port = port;
-    this.ssl = ssl;
+    this.authority = stream.connection().authority();
+    this.ssl = stream.connection().isSsl();
 
     //
     stream.pushHandler(this::handlePush);
@@ -73,10 +65,12 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
   }
 
   protected String authority() {
-    if ((port == 80 && !ssl) || (port == 443 && ssl)) {
-      return host;
+    if (authority == null) {
+      return null;
+    } else if ((authority.port() == 80 && !ssl) || (authority.port() == 443 && ssl) || authority.port() < 0) {
+      return authority.host();
     } else {
-      return host + ':' + port;
+      return authority.host() + ':' + authority.port();
     }
   }
 
@@ -118,25 +112,10 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
     return this;
   }
 
-  public String getHost() {
-    return host;
-  }
-
   @Override
-  public synchronized HttpClientRequest setHost(String host) {
-    Objects.requireNonNull(uri);
-    this.host = host;
-    return this;
-  }
-
-  @Override
-  public int getPort() {
-    return port;
-  }
-
-  @Override
-  public synchronized HttpClientRequest setPort(int port) {
-    this.port = port;
+  public synchronized HttpClientRequest authority(HostAndPort authority) {
+    Objects.requireNonNull(authority);
+    this.authority = authority;
     return this;
   }
 
@@ -153,11 +132,18 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
   }
 
   @Override
-  public synchronized HttpClientRequest setTimeout(long timeoutMs) {
+  public synchronized HttpClientRequest idleTimeout(long timeout) {
     cancelTimeout();
-    currentTimeoutMs = timeoutMs;
-    currentTimeoutTimerId = context.setTimer(timeoutMs, id -> handleTimeout(timeoutMs));
+    currentTimeoutMs = timeout;
+    currentTimeoutTimerId = context.setTimer(timeout, id -> handleTimeout(timeout));
     return this;
+  }
+
+  protected Throwable mapException(Throwable t) {
+    if (t instanceof HttpClosedException && reset != null) {
+      t = reset;
+    }
+    return t;
   }
 
   void handleException(Throwable t) {
@@ -174,7 +160,7 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
   }
 
   void handlePush(HttpClientPush push) {
-    HttpClientRequestPushPromise pushReq = new HttpClientRequestPushPromise(push.stream, client, ssl, push.method, push.uri, push.host, push.port, push.headers);
+    HttpClientRequestPushPromise pushReq = new HttpClientRequestPushPromise(push.stream, push.method, push.uri, push.headers);
     if (pushHandler != null) {
       pushHandler.handle(pushReq);
     } else {
@@ -183,7 +169,9 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
   }
 
   void handleResponse(HttpClientResponse resp) {
-    handleResponse(responsePromise, resp, cancelTimeout());
+    if (reset == null) {
+      handleResponse(responsePromise, resp, cancelTimeout());
+    }
   }
 
   abstract void handleResponse(Promise<HttpClientResponse> promise, HttpClientResponse resp, long timeoutMs);
@@ -191,7 +179,7 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
   private synchronized long cancelTimeout() {
     long ret;
     if ((ret = currentTimeoutTimerId) != -1) {
-      client.vertx().cancelTimer(currentTimeoutTimerId);
+      context.owner().cancelTimer(currentTimeoutTimerId);
       currentTimeoutTimerId = -1;
       ret = currentTimeoutMs;
       currentTimeoutMs = 0;
@@ -200,6 +188,7 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
   }
 
   private void handleTimeout(long timeoutMs) {
+    NoStackTraceTimeoutException cause;
     synchronized (this) {
       currentTimeoutTimerId = -1;
       currentTimeoutMs = 0;
@@ -209,16 +198,17 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
         if (timeSinceLastData < timeoutMs) {
           // reschedule
           lastDataReceived = 0;
-          setTimeout(timeoutMs - timeSinceLastData);
+          idleTimeout(timeoutMs - timeSinceLastData);
           return;
         }
       }
+      cause = timeoutEx(timeoutMs, method, authority, uri);
     }
-    reset(timeoutEx(timeoutMs, method, server, uri));
+    reset(cause);
   }
 
-  static NoStackTraceTimeoutException timeoutEx(long timeoutMs, HttpMethod method, SocketAddress server, String uri) {
-    return new NoStackTraceTimeoutException("The timeout period of " + timeoutMs + "ms has been exceeded while executing " + method + " " + uri + " for server " + server);
+  static NoStackTraceTimeoutException timeoutEx(long timeoutMs, HttpMethod method, HostAndPort peer, String uri) {
+    return new NoStackTraceTimeoutException("The timeout period of " + timeoutMs + "ms has been exceeded while executing " + method + " " + uri + " for server " + peer);
   }
 
   synchronized void dataReceived() {
@@ -237,7 +227,16 @@ public abstract class HttpClientRequestBase implements HttpClientRequest {
     return reset(new StreamResetException(code, cause));
   }
 
-  abstract boolean reset(Throwable cause);
+  private boolean reset(Throwable cause) {
+    synchronized (this) {
+      if (reset != null) {
+        return false;
+      }
+      reset = cause;
+    }
+    stream.reset(cause);
+    return true;
+  }
 
   @Override
   public Future<HttpClientResponse> response() {

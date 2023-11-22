@@ -12,11 +12,10 @@
 package io.vertx.core.buffer;
 
 
-import io.netty.buffer.ByteBuf;
 import io.vertx.codegen.annotations.Fluent;
 import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.codegen.annotations.VertxGen;
-import io.vertx.core.buffer.impl.BufferImpl;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -25,7 +24,6 @@ import io.vertx.core.shareddata.Shareable;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
-import java.util.Objects;
 
 /**
  * Most data is shuffled around inside Vert.x using buffers.
@@ -46,7 +44,7 @@ public interface Buffer extends ClusterSerializable, Shareable {
    * @return the buffer
    */
   static Buffer buffer() {
-    return BufferImpl.buffer();
+    return BufferInternal.buffer();
   }
 
   /**
@@ -59,7 +57,7 @@ public interface Buffer extends ClusterSerializable, Shareable {
    * @return the buffer
    */
   static Buffer buffer(int initialSizeHint) {
-    return BufferImpl.buffer(initialSizeHint);
+    return BufferInternal.buffer(initialSizeHint);
   }
 
   /**
@@ -69,7 +67,7 @@ public interface Buffer extends ClusterSerializable, Shareable {
    * @return the buffer
    */
   static Buffer buffer(String string) {
-    return BufferImpl.buffer(string);
+    return BufferInternal.buffer(string);
   }
 
   /**
@@ -80,7 +78,7 @@ public interface Buffer extends ClusterSerializable, Shareable {
    * @return the buffer
    */
   static Buffer buffer(String string, String enc) {
-    return BufferImpl.buffer(string, enc);
+    return BufferInternal.buffer(string, enc);
   }
 
   /**
@@ -91,30 +89,7 @@ public interface Buffer extends ClusterSerializable, Shareable {
    */
   @GenIgnore(GenIgnore.PERMITTED_TYPE)
   static Buffer buffer(byte[] bytes) {
-    return BufferImpl.buffer(bytes);
-  }
-
-  /**
-   * <p>
-   * Create a new buffer from a Netty {@code ByteBuf}.
-   * <i>Note that</i> the returned buffer is backed by given Netty ByteBuf,
-   * so changes in the returned buffer are reflected in given Netty ByteBuf, and vice-versa.
-   * </p>
-   * <p>
-   * For example, both buffers in the code below share their data:
-   * </p>
-   * <pre>
-   *   Buffer src = Buffer.buffer();
-   *   Buffer clone = Buffer.buffer(src.getByteBuf());
-   * </pre>
-   *
-   * @param byteBuf the Netty ByteBuf
-   * @return the buffer
-   */
-  @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  static Buffer buffer(ByteBuf byteBuf) {
-    Objects.requireNonNull(byteBuf);
-    return BufferImpl.buffer(byteBuf);
+    return BufferInternal.buffer(bytes);
   }
 
   /**
@@ -216,11 +191,25 @@ public interface Buffer extends ClusterSerializable, Shareable {
   double getDouble(int pos);
 
   /**
+   * Gets a double at the specified absolute {@code index} in this buffer in Little Endian Byte Order.
+   *
+   * @throws IndexOutOfBoundsException if the specified {@code pos} is less than {@code 0} or {@code pos + 8} is greater than the length of the Buffer.
+   */
+  double getDoubleLE(int pos);
+
+  /**
    * Returns the {@code float} at position {@code pos} in the Buffer.
    *
    * @throws IndexOutOfBoundsException if the specified {@code pos} is less than {@code 0} or {@code pos + 4} is greater than the length of the Buffer.
    */
   float getFloat(int pos);
+
+  /**
+   * Gets a float at the specified absolute {@code index} in this buffer in Little Endian Byte Order.
+   *
+   * @throws IndexOutOfBoundsException if the specified {@code pos} is less than {@code 0} or {@code pos + 4} is greater than the length of the Buffer.
+   */
+  float getFloatLE(int pos);
 
   /**
    * Returns the {@code short} at position {@code pos} in the Buffer.
@@ -490,11 +479,25 @@ public interface Buffer extends ClusterSerializable, Shareable {
   Buffer appendFloat(float f);
 
   /**
+   * Appends the specified unsigned {@code float} to the end of the Buffer in the Little Endian Byte Order.The buffer will expand as necessary to accommodate any bytes written.<p>
+   * Returns a reference to {@code this} so multiple operations can be appended together.
+   */
+  @Fluent
+  Buffer appendFloatLE(float f);
+
+  /**
    * Appends the specified {@code double} to the end of the Buffer. The buffer will expand as necessary to accommodate any bytes written.<p>
    * Returns a reference to {@code this} so multiple operations can be appended together.
    */
   @Fluent
   Buffer appendDouble(double d);
+
+  /**
+   * Appends the specified unsigned {@code double} to the end of the Buffer in the Little Endian Byte Order.The buffer will expand as necessary to accommodate any bytes written.<p>
+   * Returns a reference to {@code this} so multiple operations can be appended together.
+   */
+  @Fluent
+  Buffer appendDoubleLE(double d);
 
   /**
    * Appends the specified {@code String} to the end of the Buffer with the encoding as specified by {@code enc}.<p>
@@ -590,11 +593,25 @@ public interface Buffer extends ClusterSerializable, Shareable {
   Buffer setDouble(int pos, double d);
 
   /**
+   * Sets the {@code double} at position {@code pos} in the Buffer to the value {@code d} in the Little Endian Byte Order.<p>
+   * The buffer will expand as necessary to accommodate any value written.
+   */
+  @Fluent
+  Buffer setDoubleLE(int pos, double d);
+
+  /**
    * Sets the {@code float} at position {@code pos} in the Buffer to the value {@code f}.<p>
    * The buffer will expand as necessary to accommodate any value written.
    */
   @Fluent
   Buffer setFloat(int pos, float f);
+
+  /**
+   * Sets the {@code float} at position {@code pos} in the Buffer to the value {@code f} in the Little Endian Byte Order.<p>
+   * The buffer will expand as necessary to accommodate any value written.
+   */
+  @Fluent
+  Buffer setFloatLE(int pos, float f);
 
   /**
    * Sets the {@code short} at position {@code pos} in the Buffer to the value {@code s}.<p>
@@ -700,13 +717,5 @@ public interface Buffer extends ClusterSerializable, Shareable {
    * while they maintain separate indexes and marks.
    */
   Buffer slice(int start, int end);
-
-  /**
-   * Returns the Buffer as a Netty {@code ByteBuf}.
-   *
-   * <p> The returned buffer is a duplicate that maintain its own indices.
-   */
-  @GenIgnore(GenIgnore.PERMITTED_TYPE)
-  ByteBuf getByteBuf();
 
 }

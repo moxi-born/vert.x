@@ -22,16 +22,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * @author <a href="mailto:julien@julienviet.com">Julien Viet</a>
@@ -396,7 +394,7 @@ public class FutureTest extends FutureTestBase {
     Future<Integer> c = p.future();
     Promise<String> p3 = Promise.promise();
     Future<String> f3 = p3.future();
-    Future<String> f4 = f3.eventually(v -> {
+    Future<String> f4 = f3.eventually(() -> {
       cnt.incrementAndGet();
       return c;
     });
@@ -425,7 +423,7 @@ public class FutureTest extends FutureTestBase {
     Future<Integer> c = p.future();
     Promise<String> p3 = Promise.promise();
     Future<String> f3 = p3.future();
-    Future<String> f4 = f3.eventually(v -> {
+    Future<String> f4 = f3.eventually(() -> {
       cnt.incrementAndGet();
       return c;
     });
@@ -823,11 +821,12 @@ public class FutureTest extends FutureTestBase {
       public boolean failed() { throw new UnsupportedOperationException(); }
       public <U> Future<U> compose(Function<T, Future<U>> successMapper, Function<Throwable, Future<U>> failureMapper) { throw new UnsupportedOperationException(); }
       public <U> Future<U> transform(Function<AsyncResult<T>, Future<U>> mapper) { throw new UnsupportedOperationException(); }
-      public <U> Future<T> eventually(Function<Void, Future<U>> mapper) { throw new UnsupportedOperationException(); }
+      public <U> Future<T> eventually(Supplier<Future<U>> mapper) { throw new UnsupportedOperationException(); }
       public <U> Future<U> map(Function<T, U> mapper) { throw new UnsupportedOperationException(); }
       public <V> Future<V> map(V value) { throw new UnsupportedOperationException(); }
       public Future<T> otherwise(Function<Throwable, T> mapper) { throw new UnsupportedOperationException(); }
       public Future<T> otherwise(T value) { throw new UnsupportedOperationException(); }
+      public Future<T> timeout(long delay, TimeUnit unit) { throw new UnsupportedOperationException(); }
 
       public void handle(AsyncResult<T> asyncResult) {
         if (asyncResult.succeeded()) {
@@ -1303,13 +1302,20 @@ public class FutureTest extends FutureTestBase {
 
   @Test
   public void testSuccessNotification() {
-    waitFor(2);
+    waitFor(3);
     Promise<String> promise = Promise.promise();
     Future<String> fut = promise.future();
     fut.onComplete(onSuccess(res -> {
       assertEquals("foo", res);
       complete();
     }));
+    fut.onComplete(
+      res -> {
+        assertEquals("foo", res);
+        complete();
+      },
+      err -> fail()
+    );
     fut.onSuccess(res -> {
       assertEquals("foo", res);
       complete();
@@ -1323,7 +1329,7 @@ public class FutureTest extends FutureTestBase {
 
   @Test
   public void testFailureNotification() {
-    waitFor(2);
+    waitFor(3);
     Promise<String> promise = Promise.promise();
     Future<String> fut = promise.future();
     Throwable failure = new Throwable();
@@ -1331,6 +1337,13 @@ public class FutureTest extends FutureTestBase {
       assertEquals(failure, err);
       complete();
     }));
+    fut.onComplete(
+      res -> fail(),
+      err -> {
+        assertEquals(failure, err);
+        complete();
+      }
+    );
     fut.onSuccess(res -> {
       fail();
     });
@@ -1712,6 +1725,89 @@ public class FutureTest extends FutureTestBase {
     promiseToFail.future().andThen(callback).onComplete(completion);
     promiseToFail.fail(new Throwable());
 
+    await();
+  }
+
+  @Test
+  public void testAwaitFromPlainThread() {
+    try {
+      Promise.promise().future().await();
+      fail();
+    } catch (IllegalStateException e) {
+    }
+  }
+
+  @Test
+  public void contextFutureTimeoutFires() {
+    ContextInternal ctx = (ContextInternal) vertx.getOrCreateContext();
+    Promise<String> promise = ctx.promise();
+    Future<String> fut = promise.future();
+    futureTimeoutFires(ctx, fut);
+  }
+
+  @Test
+  public void futureTimeoutFires() {
+    disableThreadChecks();
+    Promise<String> promise = Promise.promise();
+    Future<String> fut = promise.future();
+    futureTimeoutFires(null, fut);
+  }
+
+  private void futureTimeoutFires(Context ctx, Future<String> fut) {
+    Future<String> timeout = fut.timeout(100, TimeUnit.MILLISECONDS);
+    timeout.onComplete(onFailure(err -> {
+      assertTrue(err instanceof TimeoutException);
+      assertSame(Vertx.currentContext(), ctx);
+      testComplete();
+    }));
+    await();
+  }
+
+  @Test
+  public void contextFutureTimeoutExpires() throws Exception {
+    ContextInternal ctx = (ContextInternal) vertx.getOrCreateContext();
+    Promise<String> promise = ctx.promise();
+    futureTimeoutExpires(ctx, promise);
+  }
+
+  @Test
+  public void futureTimeoutExpires() throws Exception {
+    disableThreadChecks();
+    Promise<String> promise = Promise.promise();
+    futureTimeoutExpires(null, promise);
+  }
+
+  private void futureTimeoutExpires(Context ctx, Promise<String> promise) throws Exception {
+    Future<String> timeout = promise.future().timeout(10, TimeUnit.SECONDS);
+    timeout.onComplete(onSuccess(val -> {
+      assertSame(Vertx.currentContext(), ctx);
+      assertEquals("value", val);
+      testComplete();
+    }));
+    Thread.sleep(100);
+    promise.complete("value");
+    await();
+  }
+
+  @Test
+  public void contextCompletedFutureTimeout() throws Exception {
+    ContextInternal ctx = (ContextInternal) vertx.getOrCreateContext();
+    completedFutureTimeout(ctx, ctx.succeededFuture("value"));
+  }
+
+  @Test
+  public void completedFutureTimeout() throws Exception {
+    disableThreadChecks();
+    completedFutureTimeout(null, Future.succeededFuture("value"));
+  }
+
+  private void completedFutureTimeout(Context ctx, Future<String> future) throws Exception {
+    Future<String> timeout = future.timeout(10, TimeUnit.SECONDS);
+    timeout.onComplete(onSuccess(val -> {
+      assertSame(Vertx.currentContext(), ctx);
+      assertEquals("value", val);
+      testComplete();
+    }));
     await();
   }
 }

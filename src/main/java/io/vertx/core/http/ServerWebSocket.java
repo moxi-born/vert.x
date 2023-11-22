@@ -18,6 +18,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.net.HostAndPort;
 
 import javax.net.ssl.SSLSession;
 
@@ -30,7 +31,7 @@ import javax.net.ssl.SSLSession;
  * @author <a href="http://tfox.org">Tim Fox</a>
  */
 @VertxGen
-public interface ServerWebSocket extends WebSocketBase {
+public interface ServerWebSocket extends WebSocket {
 
   @Override
   ServerWebSocket exceptionHandler(Handler<Throwable> handler);
@@ -69,10 +70,10 @@ public interface ServerWebSocket extends WebSocketBase {
   String scheme();
 
   /**
-   * @return the WebSocket handshake host
+   * @return the WebSocket handshake authority
    */
   @Nullable
-  String host();
+  HostAndPort authority();
 
   /*
    * @return the WebSocket handshake URI. This is a relative URI.

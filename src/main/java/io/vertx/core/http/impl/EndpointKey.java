@@ -10,6 +10,8 @@
  */
 package io.vertx.core.http.impl;
 
+import io.vertx.core.net.ClientSSLOptions;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.ProxyOptions;
 import io.vertx.core.net.SocketAddress;
 
@@ -18,36 +20,44 @@ import java.util.Objects;
 final class EndpointKey {
 
   final boolean ssl;
-  final SocketAddress serverAddr;
-  final SocketAddress peerAddr;
+  final SocketAddress server;
+  final HostAndPort authority;
   final ProxyOptions proxyOptions;
+  final ClientSSLOptions sslOptions;
 
-  EndpointKey(boolean ssl, ProxyOptions proxyOptions, SocketAddress serverAddr, SocketAddress peerAddr) {
-    if (serverAddr == null) {
+  EndpointKey(boolean ssl, ClientSSLOptions sslOptions, ProxyOptions proxyOptions, SocketAddress server, HostAndPort authority) {
+    if (server == null) {
       throw new NullPointerException("No null server address");
     }
-    if (peerAddr == null) {
-      throw new NullPointerException("No null peer address");
-    }
     this.ssl = ssl;
+    this.sslOptions = sslOptions;
     this.proxyOptions = proxyOptions;
-    this.peerAddr = peerAddr;
-    this.serverAddr = serverAddr;
+    this.authority = authority;
+    this.server = server;
   }
 
   @Override
   public boolean equals(Object o) {
-    if (this == o) return true;
-    if (o == null || getClass() != o.getClass()) return false;
-    EndpointKey that = (EndpointKey) o;
-    return ssl == that.ssl && serverAddr.equals(that.serverAddr) && peerAddr.equals(that.peerAddr) && equals(proxyOptions, that.proxyOptions);
+    if (this == o) {
+      return true;
+    };
+    if (o instanceof EndpointKey) {
+      EndpointKey that = (EndpointKey) o;
+      return ssl == that.ssl && server.equals(that.server) && Objects.equals(authority, that.authority) && Objects.equals(sslOptions, that.sslOptions) && equals(proxyOptions, that.proxyOptions);
+    }
+    return false;
   }
 
   @Override
   public int hashCode() {
     int result = ssl ? 1 : 0;
-    result = 31 * result + peerAddr.hashCode();
-    result = 31 * result + serverAddr.hashCode();
+    result = 31 * result + server.hashCode();
+    if (authority != null) {
+      result = 31 * result + authority.hashCode();
+    }
+    if (sslOptions != null) {
+      result = 31 * result + sslOptions.hashCode();
+    }
     if (proxyOptions != null) {
       result = 31 * result + hashCode(proxyOptions);
     }
@@ -73,5 +83,10 @@ final class EndpointKey {
     } else {
       return Objects.hash(options.getHost(), options.getPort(), options.getType());
     }
+  }
+
+  @Override
+  public String toString() {
+    return server.toString();
   }
 }

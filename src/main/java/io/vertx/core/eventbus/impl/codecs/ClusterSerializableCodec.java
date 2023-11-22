@@ -15,7 +15,7 @@ import io.netty.util.CharsetUtil;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.eventbus.MessageCodec;
 import io.vertx.core.eventbus.impl.CodecManager;
-import io.vertx.core.shareddata.impl.ClusterSerializable;
+import io.vertx.core.shareddata.ClusterSerializable;
 
 import static io.vertx.core.impl.ClusterSerializableUtils.copy;
 
@@ -47,7 +47,7 @@ public class ClusterSerializableCodec implements MessageCodec<ClusterSerializabl
     ClusterSerializable clusterSerializable;
     try {
       Class<?> clazz = getClassLoader().loadClass(className);
-      clusterSerializable = (ClusterSerializable) clazz.newInstance();
+      clusterSerializable = (ClusterSerializable) clazz.getDeclaredConstructor().newInstance();
     } catch (Exception e) {
       throw new RuntimeException(e);
     }

@@ -362,11 +362,8 @@ public class HATest extends VertxTestBase {
   }
 
   protected Vertx startVertx(String haGroup, int quorumSize, boolean ha) throws Exception {
-    VertxOptions options = new VertxOptions()
-      .setHAEnabled(ha)
-      .setClusterManager(getClusterManager());
-    options.getEventBusOptions()
-      .setHost("localhost");
+    VertxOptions options = new VertxOptions().setHAEnabled(ha);
+    options.getEventBusOptions().setHost("localhost");
     if (ha) {
       options.setQuorumSize(quorumSize);
       if (haGroup != null) {
@@ -375,10 +372,14 @@ public class HATest extends VertxTestBase {
     }
     CountDownLatch latch = new CountDownLatch(1);
     AtomicReference<Vertx> vertxRef = new AtomicReference<>();
-    clusteredVertx(options, onSuccess(vertx -> {
-      vertxRef.set(vertx);
-      latch.countDown();
-    }));
+    Vertx.builder()
+      .with(options)
+      .withClusterManager(getClusterManager())
+      .buildClustered()
+      .onComplete(onSuccess(vertx -> {
+        vertxRef.set(vertx);
+        latch.countDown();
+      }));
     latch.await(2, TimeUnit.MINUTES);
     return vertxRef.get();
   }
@@ -397,13 +398,9 @@ public class HATest extends VertxTestBase {
 
   protected void kill(int pos) {
     VertxInternal v = (VertxInternal)vertices[pos];
-    v.executeBlocking(fut -> {
-      try {
-        v.simulateKill();
-        fut.complete();
-      } catch (Exception e) {
-        fut.fail(e);
-      }
+    v.executeBlocking(() -> {
+      v.simulateKill();
+      return null;
     }, false).onComplete(onSuccess(ar -> {
     }));
   }

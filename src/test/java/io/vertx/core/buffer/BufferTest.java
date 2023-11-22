@@ -15,6 +15,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.util.IllegalReferenceCountException;
 import io.vertx.core.buffer.impl.BufferImpl;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
@@ -42,14 +43,14 @@ public class BufferTest {
   }
 
   private static final int MEDIUM_MAX_VALUE = 2 << 23;
-  private static final Function<byte[], Buffer> PADDED_BUFFER_FACTORY = arr -> Buffer.buffer(paddedByteBuf(5, arr));
+  private static final Function<byte[], Buffer> PADDED_BUFFER_FACTORY = arr -> BufferInternal.buffer(paddedByteBuf(5, arr));
 
   @Test
   public void testConstructorArguments() throws Exception {
     assertIllegalArgumentException(() -> Buffer.buffer(-1));
     assertNullPointerException(() -> Buffer.buffer((byte[]) null));
     assertNullPointerException(() -> Buffer.buffer((String) null));
-    assertNullPointerException(() -> Buffer.buffer((ByteBuf) null));
+    assertNullPointerException(() -> BufferInternal.buffer((ByteBuf) null));
     assertNullPointerException(() -> Buffer.buffer(null, "UTF-8"));
     assertNullPointerException(() -> Buffer.buffer("", null));
   }
@@ -276,6 +277,8 @@ public class BufferTest {
     checkBEAndLE(4, Buffer.buffer().appendInt(Integer.MAX_VALUE), Buffer.buffer().appendIntLE(Integer.MAX_VALUE));
     checkBEAndLE(4, Buffer.buffer().appendUnsignedInt(Integer.MAX_VALUE), Buffer.buffer().appendUnsignedIntLE(Integer.MAX_VALUE));
     checkBEAndLE(8, Buffer.buffer().appendLong(Long.MAX_VALUE), Buffer.buffer().appendLongLE(Long.MAX_VALUE));
+    checkBEAndLE(4, Buffer.buffer().appendFloat(Float.MAX_VALUE), Buffer.buffer().appendFloatLE(Float.MAX_VALUE));
+    checkBEAndLE(8, Buffer.buffer().appendDouble(Double.MAX_VALUE), Buffer.buffer().appendDoubleLE(Double.MAX_VALUE));
   }
 
   private void checkBEAndLE(int size, Buffer big, Buffer little) {
@@ -528,30 +531,65 @@ public class BufferTest {
     testGetSetLong(true);
   }
 
-  @Test
-  public void testGetFloat() throws Exception {
+  public void testGetFloat(boolean isLE) throws Exception {
     int numFloats = 100;
     Buffer b = Buffer.buffer(numFloats * 4);
     for (int i = 0; i < numFloats; i++) {
-      b.setFloat(i * 4, i);
+      if (isLE) {
+        b.setFloatLE(i * 4, i);
+      } else {
+        b.setFloat(i * 4, i);
+      }
+
     }
 
     for (int i = 0; i < numFloats; i++) {
-      assertEquals((float) i, b.getFloat(i * 4), 0);
+      if (isLE) {
+        assertEquals((float) i, b.getFloatLE(i * 4), 0);
+      } else {
+        assertEquals((float) i, b.getFloat(i * 4), 0);
+      }
+    }
+  }
+
+  @Test
+  public void testGetFloat() throws Exception {
+    testGetFloat(false);
+  }
+
+  @Test
+  public void testGetFloatLE() throws Exception {
+    testGetFloat(true);
+  }
+
+  public void testGetDouble(boolean isLE) throws Exception {
+    int numDoubles = 100;
+    Buffer b = Buffer.buffer(numDoubles * 8);
+    for (int i = 0; i < numDoubles; i++) {
+      if (isLE) {
+        b.setDoubleLE(i * 8, i);
+      } else {
+        b.setDouble(i * 8, i);
+      }
+    }
+
+    for (int i = 0; i < numDoubles; i++) {
+      if (isLE) {
+        assertEquals((double) i, b.getDoubleLE(i * 8), 0);
+      } else {
+        assertEquals((double) i, b.getDouble(i * 8), 0);
+      }
     }
   }
 
   @Test
   public void testGetDouble() throws Exception {
-    int numDoubles = 100;
-    Buffer b = Buffer.buffer(numDoubles * 8);
-    for (int i = 0; i < numDoubles; i++) {
-      b.setDouble(i * 8, i);
-    }
+    testGetDouble(false);
+  }
 
-    for (int i = 0; i < numDoubles; i++) {
-      assertEquals((double) i, b.getDouble(i * 8), 0);
-    }
+  @Test
+  public void testGetDoubleLE() throws Exception {
+    testGetDouble(true);
   }
 
   private void testGetSetShort(boolean isLE) throws Exception {
@@ -1026,7 +1064,7 @@ public class BufferTest {
     assertEquals(rand, buff.getLong(0));
     buff.appendString(TestUtils.randomUnicodeString(100));
     assertEquals(100, sliced.length());
-    ByteBuf duplicate = sliced.getByteBuf();
+    ByteBuf duplicate = ((BufferInternal)sliced).getByteBuf();
     assertEquals(0, duplicate.readerIndex());
     assertEquals(100, duplicate.readableBytes());
     for (int i = 0; i < 100; i++) {
@@ -1051,7 +1089,7 @@ public class BufferTest {
     assertEquals(rand, buff.getLong(10));
     buff.appendString(TestUtils.randomUnicodeString(100));
     assertEquals(10, sliced.length());
-    ByteBuf duplicate = sliced.getByteBuf();
+    ByteBuf duplicate = ((BufferInternal)sliced).getByteBuf();
     assertEquals(0, duplicate.readerIndex());
     assertEquals(10, duplicate.readableBytes());
     for (int i = 0; i < 10; i++) {
@@ -1101,14 +1139,14 @@ public class BufferTest {
   @Test
   public void testLength() throws Exception {
     byte[] bytes = TestUtils.randomByteArray(100);
-    Buffer buffer = Buffer.buffer(bytes);
-    assertEquals(100, Buffer.buffer(buffer.getByteBuf()).length());
+    BufferInternal buffer = BufferInternal.buffer(bytes);
+    assertEquals(100, BufferInternal.buffer(buffer.getByteBuf()).length());
   }
 
   @Test
   public void testLength2() throws Exception {
     byte[] bytes = TestUtils.randomByteArray(100);
-    assertEquals(90, Buffer.buffer(Unpooled.copiedBuffer(bytes).slice(10, 90)).length());
+    assertEquals(90, BufferInternal.buffer(Unpooled.copiedBuffer(bytes).slice(10, 90)).length());
   }
 
   @Test
@@ -1116,7 +1154,7 @@ public class BufferTest {
     ByteBuf buf = Unpooled.copiedBuffer("foobar".getBytes());
     assertEquals(0, buf.readerIndex());
     assertEquals(6, buf.writerIndex());
-    Buffer buffer = Buffer.buffer(buf);
+    Buffer buffer = BufferInternal.buffer(buf);
     Buffer other = Buffer.buffer("prefix");
     other.appendBuffer(buffer);
     assertEquals(0, buf.readerIndex());
@@ -1126,7 +1164,7 @@ public class BufferTest {
 
   @Test
   public void testAppendExpandsBufferWhenMaxCapacityReached() {
-    Buffer buff = Buffer.buffer(Unpooled.buffer(0, 8));
+    Buffer buff = BufferInternal.buffer(Unpooled.buffer(0, 8));
     buff.appendString("Hello World");
   }
 
@@ -1134,7 +1172,7 @@ public class BufferTest {
   public void testWriteExpandsBufferWhenMaxCapacityReached() {
     String s = "Hello World";
     ByteBuf byteBuf = Unpooled.buffer(0, s.length() - 1);
-    Buffer buff = Buffer.buffer(byteBuf);
+    Buffer buff = BufferInternal.buffer(byteBuf);
     int idx = 0;
     for (byte b : s.getBytes()) {
       buff.setByte(idx++, b);
@@ -1145,7 +1183,7 @@ public class BufferTest {
   public void testSetByteAfterCurrentWriterIndexWithoutExpandingCapacity() {
     ByteBuf byteBuf = Unpooled.buffer(10, Integer.MAX_VALUE);
     byteBuf.writerIndex(5);
-    Buffer buff = Buffer.buffer(byteBuf);
+    Buffer buff = BufferInternal.buffer(byteBuf);
     buff.setByte(7, (byte)1);
     assertEquals(8, buff.length());
   }
@@ -1154,7 +1192,7 @@ public class BufferTest {
   public void testGetByteBuf() {
     ByteBuf byteBuf = Unpooled.buffer();
     byteBuf.writeCharSequence("Hello World", StandardCharsets.UTF_8);
-    Buffer buff = Buffer.buffer(byteBuf);
+    BufferInternal buff = BufferInternal.buffer(byteBuf);
     ByteBuf duplicate = buff.getByteBuf();
     duplicate.writerIndex(5);
     assertEquals(11, byteBuf.writerIndex());
@@ -1199,7 +1237,7 @@ public class BufferTest {
   public void testReadOnlyByteBuf() {
     String s = "Hello World";
     ByteBuf byteBuf = Unpooled.buffer(0, s.length() - 1);
-    Buffer buff = Buffer.buffer(byteBuf.asReadOnly());
+    Buffer buff = BufferInternal.buffer(byteBuf.asReadOnly());
     assertSame(buff, buff.copy());
   }
 }

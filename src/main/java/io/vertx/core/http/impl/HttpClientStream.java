@@ -17,6 +17,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.http.HttpFrame;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.StreamPriority;
@@ -48,7 +49,7 @@ public interface HttpClientStream extends WriteStream<Buffer> {
 
   Future<Void> writeHead(HttpRequestHead request, boolean chunked, ByteBuf buf, boolean end, StreamPriority priority, boolean connect);
   Future<Void> writeBuffer(ByteBuf buf, boolean end);
-  void writeFrame(int type, int flags, ByteBuf payload);
+  Future<Void> writeFrame(int type, int flags, ByteBuf payload);
 
   void continueHandler(Handler<Void> handler);
   void earlyHintsHandler(Handler<MultiMap> handler);
@@ -57,12 +58,12 @@ public interface HttpClientStream extends WriteStream<Buffer> {
 
   @Override
   default Future<Void> write(Buffer data) {
-    return writeBuffer(data.getByteBuf(), false);
+    return writeBuffer(((BufferInternal)data).getByteBuf(), false);
   }
 
   @Override
   default Future<Void> end(Buffer data) {
-    return writeBuffer(data.getByteBuf(), true);
+    return writeBuffer(((BufferInternal)data).getByteBuf(), true);
   }
 
   @Override

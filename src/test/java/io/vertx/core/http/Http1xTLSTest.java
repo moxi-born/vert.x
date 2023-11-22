@@ -13,9 +13,7 @@ package io.vertx.core.http;
 
 import io.netty.buffer.ByteBufUtil;
 import io.vertx.core.AbstractVerticle;
-import io.vertx.core.CompositeFuture;
 import io.vertx.core.DeploymentOptions;
-import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.VertxOptions;
 import io.vertx.test.tls.Cert;
@@ -29,7 +27,6 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -39,17 +36,20 @@ import java.util.stream.Collectors;
 public class Http1xTLSTest extends HttpTLSTest {
 
   @Override
-  HttpServer createHttpServer(HttpServerOptions options) {
-    return vertx.createHttpServer(options);
-  }
+  protected HttpServerOptions createBaseServerOptions() {
+    return new HttpServerOptions()
+      .setPort(HttpTestBase.DEFAULT_HTTPS_PORT)
+      .setSsl(true);
+  };
 
   @Override
-  HttpClient createHttpClient(HttpClientOptions options) {
-    return vertx.createHttpClient(options);
+  protected HttpClientOptions createBaseClientOptions() {
+    return new HttpClientOptions()
+      .setSsl(true)
+      .setProtocolVersion(HttpVersion.HTTP_1_1);
   }
 
-
-  // ALPN tests
+// ALPN tests
 
   @Test
   // Client and server uses ALPN
@@ -145,7 +145,7 @@ public class Http1xTLSTest extends HttpTLSTest {
   public void testRedirectFromSSL() throws Exception {
     HttpServer redirectServer = vertx.createHttpServer(new HttpServerOptions()
         .setSsl(true)
-        .setKeyStoreOptions(Cert.SERVER_JKS.get())
+        .setKeyCertOptions(Cert.SERVER_JKS.get())
         .setHost(DEFAULT_HTTP_HOST)
         .setPort(DEFAULT_HTTP_PORT)
     ).requestHandler(req -> {
@@ -170,7 +170,7 @@ public class Http1xTLSTest extends HttpTLSTest {
     List<String> expected = Arrays.asList("chunk-1", "chunk-2", "chunk-3");
     server = vertx.createHttpServer(new HttpServerOptions()
       .setSsl(true)
-      .setKeyStoreOptions(Cert.SERVER_JKS.get())
+      .setKeyCertOptions(Cert.SERVER_JKS.get())
       .setHost(DEFAULT_HTTPS_HOST)
       .setPort(DEFAULT_HTTPS_PORT)
     ).requestHandler(req -> {
@@ -203,17 +203,19 @@ public class Http1xTLSTest extends HttpTLSTest {
     List<String> expected = Arrays.asList("chunk-1", "chunk-2", "chunk-3");
     HttpClientOptions options = new HttpClientOptions()
       .setEnabledSecureTransportProtocols(Collections.singleton("TLSv1.2"))
-      .setMaxPoolSize(num)
       .setSsl(true)
       .setTrustAll(true);
-    client.close();
-    client = vertx.createHttpClient(options);
     AtomicInteger connCount = new AtomicInteger();
     List<String> sessionIds = Collections.synchronizedList(new ArrayList<>());
-    client.connectionHandler(conn -> {
-      sessionIds.add(ByteBufUtil.hexDump(conn.sslSession().getId()));
-      connCount.incrementAndGet();
-    });
+    client.close();
+    client = vertx.httpClientBuilder()
+      .with(options)
+      .with(new PoolOptions().setHttp1MaxSize(num))
+      .withConnectHandler(conn -> {
+        sessionIds.add(ByteBufUtil.hexDump(conn.sslSession().getId()));
+        connCount.incrementAndGet();
+      })
+      .build();
     CountDownLatch listenLatch = new CountDownLatch(1);
     vertx.deployVerticle(() -> new AbstractVerticle() {
       HttpServer server;
@@ -221,7 +223,7 @@ public class Http1xTLSTest extends HttpTLSTest {
       public void start(Promise<Void> startPromise) {
         server = vertx.createHttpServer(new HttpServerOptions()
           .setSsl(true)
-          .setKeyStoreOptions(Cert.SERVER_JKS.get())
+          .setKeyCertOptions(Cert.SERVER_JKS.get())
           .setHost(DEFAULT_HTTPS_HOST)
           .setPort(DEFAULT_HTTPS_PORT)
         ).requestHandler(req -> {

@@ -24,6 +24,7 @@ import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.Promise;
 import io.vertx.core.Handler;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.http.GoAway;
 import io.vertx.core.net.impl.ShutdownEvent;
 import io.vertx.core.net.impl.ConnectionBase;
@@ -210,20 +211,22 @@ class VertxHttp2ConnectionHandler<C extends Http2ConnectionBase> extends Http2Co
 
   @Override
   public void onGoAwaySent(int lastStreamId, long errorCode, ByteBuf debugData) {
-    connection.onGoAwaySent(new GoAway().setErrorCode(errorCode).setLastStreamId(lastStreamId).setDebugData(Buffer.buffer(debugData)));
+    connection.onGoAwaySent(new GoAway().setErrorCode(errorCode).setLastStreamId(lastStreamId).setDebugData(BufferInternal.buffer(debugData)));
   }
 
   @Override
   public void onGoAwayReceived(int lastStreamId, long errorCode, ByteBuf debugData) {
-    connection.onGoAwayReceived(new GoAway().setErrorCode(errorCode).setLastStreamId(lastStreamId).setDebugData(Buffer.buffer(debugData)));
+    connection.onGoAwayReceived(new GoAway().setErrorCode(errorCode).setLastStreamId(lastStreamId).setDebugData(BufferInternal.buffer(debugData)));
   }
 
   //
 
-  void writeHeaders(Http2Stream stream, Http2Headers headers, boolean end, int streamDependency, short weight, boolean exclusive, FutureListener<Void> listener) {
+  void writeHeaders(Http2Stream stream, Http2Headers headers, boolean end, int streamDependency, short weight, boolean exclusive, boolean checkFlush, FutureListener<Void> listener) {
     ChannelPromise promise = listener == null ? chctx.voidPromise() : chctx.newPromise().addListener(listener);
     encoder().writeHeaders(chctx, stream.id(), headers, streamDependency, weight, exclusive, 0, end, promise);
-    checkFlush();
+    if (checkFlush) {
+      checkFlush();
+    }
   }
 
   void writeData(Http2Stream stream, ByteBuf chunk, boolean end, FutureListener<Void> listener) {
@@ -278,8 +281,9 @@ class VertxHttp2ConnectionHandler<C extends Http2ConnectionBase> extends Http2Co
     }
   }
 
-  void writeFrame(Http2Stream stream, byte type, short flags, ByteBuf payload) {
-    encoder().writeFrame(chctx, type, stream.id(), new Http2Flags(flags), payload, chctx.newPromise());
+  void writeFrame(Http2Stream stream, byte type, short flags, ByteBuf payload, FutureListener<Void> listener) {
+    ChannelPromise promise = listener == null ? chctx.voidPromise() : chctx.newPromise().addListener(listener);
+    encoder().writeFrame(chctx, type, stream.id(), new Http2Flags(flags), payload, promise);
     checkFlush();
   }
 
@@ -411,9 +415,6 @@ class VertxHttp2ConnectionHandler<C extends Http2ConnectionBase> extends Http2Co
         connection.onHeadersRead(ctx, 1, frame.headers(), frame.padding(), frame.isEndStream());
       } else if (msg instanceof Http2DataFrame) {
         Http2DataFrame frame = (Http2DataFrame) msg;
-        Http2LocalFlowController controller = decoder().flowController();
-        Http2Stream stream = decoder().connection().stream(1);
-        controller.receiveFlowControlledFrame(stream, frame.content(), frame.padding(), frame.isEndStream());
         connection.onDataRead(ctx, 1, frame.content(), frame.padding(), frame.isEndStream());
       }
     } else {

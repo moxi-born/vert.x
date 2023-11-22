@@ -14,7 +14,6 @@ package io.vertx.core.http.impl;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.DefaultHttpContent;
 import io.netty.handler.codec.http.EmptyHttpHeaders;
 import io.netty.handler.codec.http.HttpObject;
@@ -22,13 +21,14 @@ import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.util.concurrent.FutureListener;
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.http.Cookie;
 import io.vertx.core.http.HttpClosedException;
 import io.vertx.core.http.HttpHeaders;
@@ -40,12 +40,12 @@ import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.spi.metrics.Metrics;
 import io.vertx.core.spi.observability.HttpResponse;
 
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.RandomAccessFile;
 import java.util.Set;
 
@@ -65,7 +65,7 @@ import static io.vertx.core.http.HttpHeaders.*;
  */
 public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
 
-  private static final Buffer EMPTY_BUFFER = Buffer.buffer(Unpooled.EMPTY_BUFFER);
+  private static final Buffer EMPTY_BUFFER = BufferInternal.buffer(Unpooled.EMPTY_BUFFER);
   private static final Logger log = LoggerFactory.getLogger(Http1xServerResponse.class);
   private static final String RESPONSE_WRITTEN = "Response has already been written";
 
@@ -87,7 +87,6 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   private Handler<Void> endHandler;
   private Handler<Void> headersEndHandler;
   private Handler<Void> bodyEndHandler;
-  private boolean writable;
   private boolean closed;
   private final HeadersMultiMap headers;
   private CookieJar cookies;
@@ -102,7 +101,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
                        Http1xServerConnection conn,
                        HttpRequest request,
                        Object requestMetric,
-                       boolean writable) {
+                       boolean keepAlive) {
     this.vertx = vertx;
     this.conn = conn;
     this.context = context;
@@ -111,9 +110,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
     this.request = request;
     this.status = HttpResponseStatus.OK;
     this.requestMetric = requestMetric;
-    this.writable = writable;
-    this.keepAlive = (version == HttpVersion.HTTP_1_1 && !request.headers().contains(io.vertx.core.http.HttpHeaders.CONNECTION, HttpHeaders.CLOSE, true))
-      || (version == HttpVersion.HTTP_1_0 && request.headers().contains(io.vertx.core.http.HttpHeaders.CONNECTION, HttpHeaders.KEEP_ALIVE, true));
+    this.keepAlive = keepAlive;
     this.head = request.method() == io.netty.handler.codec.http.HttpMethod.HEAD;
   }
 
@@ -270,7 +267,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   public boolean writeQueueFull() {
     synchronized (conn) {
       checkValid();
-      return !writable;
+      return conn.writeQueueFull();
     }
   }
 
@@ -321,28 +318,29 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   @Override
   public Future<Void> write(Buffer chunk) {
     PromiseInternal<Void> promise = context.promise();
-    write(chunk.getByteBuf(), promise);
+    write(((BufferInternal)chunk).getByteBuf(), promise);
     return promise.future();
   }
 
   @Override
   public Future<Void> write(String chunk, String enc) {
     PromiseInternal<Void> promise = context.promise();
-    write(Buffer.buffer(chunk, enc).getByteBuf(), promise);
+    write(BufferInternal.buffer(chunk, enc).getByteBuf(), promise);
     return promise.future();
   }
 
   @Override
   public Future<Void> write(String chunk) {
     PromiseInternal<Void> promise = context.promise();
-    write(Buffer.buffer(chunk).getByteBuf(), promise);
+    write(BufferInternal.buffer(chunk).getByteBuf(), promise);
     return promise.future();
   }
 
   @Override
-  public HttpServerResponse writeContinue() {
-    conn.write100Continue();
-    return this;
+  public Future<Void> writeContinue() {
+    Promise<Void> promise = context.promise();
+    conn.write100Continue((FutureListener<Void>) promise);
+    return promise.future();
   }
 
   @Override
@@ -385,7 +383,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
         throw new IllegalStateException(RESPONSE_WRITTEN);
       }
       written = true;
-      ByteBuf data = chunk.getByteBuf();
+      ByteBuf data = ((BufferInternal)chunk).getByteBuf();
       bytesWritten += data.readableBytes();
       HttpObject msg;
       if (!headWritten) {
@@ -396,8 +394,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
       } else {
         msg = new AssembledLastHttpContent(data, trailingHeaders);
       }
-      conn.writeToChannel(msg, listener);
-      conn.responseComplete();
+      conn.write(msg, listener);
       if (bodyEndHandler != null) {
         bodyEndHandler.handle(null);
       }
@@ -405,8 +402,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
         endHandler.handle(null);
       }
       if (!keepAlive) {
-        closeConnAfterWrite();
-        closed = true;
+        closed = true; // ?????
       }
     }
   }
@@ -421,20 +417,6 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
       written = true;
     }
     conn.responseComplete();
-  }
-
-  @Override
-  public void close() {
-    synchronized (conn) {
-      if (!closed) {
-        if (headWritten) {
-          closeConnAfterWrite();
-        } else {
-          conn.close();
-        }
-        closed = true;
-      }
-    }
   }
 
   @Override
@@ -469,20 +451,14 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
       bytesWritten = actualLength;
       written = true;
 
-      conn.writeToChannel(new AssembledHttpResponse(head, version, status, headers));
+      conn.write(new AssembledHttpResponse(head, version, status, headers), null);
 
       ChannelFuture channelFut = conn.sendFile(raf, actualOffset, actualLength);
       channelFut.addListener(future -> {
 
         // write an empty last content to let the http encoder know the response is complete
         if (future.isSuccess()) {
-          ChannelPromise pr = conn.channelHandlerContext().newPromise();
-          conn.writeToChannel(LastHttpContent.EMPTY_LAST_CONTENT, pr);
-          if (!keepAlive) {
-            pr.addListener(a -> {
-              closeConnAfterWrite();
-            });
-          }
+          conn.write(LastHttpContent.EMPTY_LAST_CONTENT, null);
         }
 
         // signal body end handler
@@ -495,7 +471,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
         }
 
         // allow to write next response
-        conn.responseComplete();
+        // conn.responseComplete();
 
         // signal end handler
         Handler<Void> end;
@@ -557,23 +533,14 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
     }
   }
 
-  private void closeConnAfterWrite() {
-    ChannelPromise channelFuture = conn.channelFuture();
-    conn.writeToChannel(Unpooled.EMPTY_BUFFER, channelFuture);
-    channelFuture.addListener(fut -> conn.close());
-  }
-
-  void handleWritabilityChanged(boolean writable) {
+  void handleWriteQueueDrained(Void v) {
     Handler<Void> handler;
     synchronized (conn) {
-      boolean skip = this.writable && !writable;
-      this.writable = writable;
       handler = drainHandler;
-      if (handler == null || skip) {
-        return;
-      }
     }
-    context.dispatch(null, handler);
+    if (handler != null) {
+      context.dispatch(null, handler);
+    }
   }
 
   void handleException(Throwable t) {
@@ -690,7 +657,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
       } else {
         msg = new DefaultHttpContent(chunk);
       }
-      conn.writeToChannel(msg, promise);
+      conn.write(msg, promise);
       return this;
     }
   }
@@ -707,7 +674,7 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
         status = requestMethod == HttpMethod.CONNECT ? HttpResponseStatus.OK : HttpResponseStatus.SWITCHING_PROTOCOLS;
         prepareHeaders(-1);
         PromiseInternal<Void> upgradePromise = context.promise();
-        conn.writeToChannel(new AssembledHttpResponse(head, version, status, headers), upgradePromise);
+        conn.write(new AssembledHttpResponse(head, version, status, headers), upgradePromise);
         written = true;
         Promise<NetSocket> promise = context.promise();
         netSocket = promise.future();
@@ -729,8 +696,13 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
         return false;
       }
     }
-    close();
+    conn.close();
     return true;
+  }
+
+  @Override
+  public Future<HttpServerResponse> push(HttpMethod method, HostAndPort authority, String path, MultiMap headers) {
+    return context.failedFuture("HTTP/1 does not support response push");
   }
 
   @Override
@@ -739,8 +711,8 @@ public class Http1xServerResponse implements HttpServerResponse, HttpResponse {
   }
 
   @Override
-  public HttpServerResponse writeCustomFrame(int type, int flags, Buffer payload) {
-    return this;
+  public Future<Void> writeCustomFrame(int type, int flags, Buffer payload) {
+    return context.failedFuture("HTTP/1 does not support custom frames");
   }
 
   CookieJar cookies() {

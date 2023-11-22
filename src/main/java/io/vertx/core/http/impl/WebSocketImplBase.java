@@ -20,20 +20,15 @@ import io.netty.handler.codec.http.websocketx.ContinuationWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.PongWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
-import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
-import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.MessageConsumer;
-import io.vertx.core.http.HttpConnection;
-import io.vertx.core.http.WebSocketBase;
-import io.vertx.core.http.WebSocketFrame;
-import io.vertx.core.http.WebSocketFrameType;
+import io.vertx.core.http.*;
 import io.vertx.core.http.impl.ws.WebSocketFrameImpl;
 import io.vertx.core.http.impl.ws.WebSocketFrameInternal;
 import io.vertx.core.impl.ContextInternal;
@@ -59,7 +54,7 @@ import static io.vertx.core.net.impl.VertxHandler.*;
  * @author <a href="http://tfox.org">Tim Fox</a>
  * @param <S> self return type
  */
-public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebSocketInternal {
+public abstract class WebSocketImplBase<S extends WebSocket> implements WebSocketInternal {
 
   private final boolean supportsContinuation;
   private final String textHandlerID;
@@ -75,13 +70,13 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
   private Object metric;
   private Handler<Buffer> handler;
   private Handler<WebSocketFrameInternal> frameHandler;
+  private FrameAggregator frameAggregator;
   private Handler<Buffer> pongHandler;
   private Handler<Void> drainHandler;
   private Handler<Throwable> exceptionHandler;
   private Handler<Void> closeHandler;
   private Handler<Void> endHandler;
   protected final Http1xConnectionBase conn;
-  private boolean writable;
   private boolean closed;
   private Short closeStatusCode;
   private String closeReason;
@@ -107,7 +102,6 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
     this.maxWebSocketFrameSize = maxWebSocketFrameSize;
     this.maxWebSocketMessageSize = maxWebSocketMessageSize;
     this.pending = new InboundBuffer<>(context);
-    this.writable = !conn.isNotWritable();
     this.chctx = conn.channelHandlerContext();
     this.headers = headers;
 
@@ -145,7 +139,7 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
   public boolean writeQueueFull() {
     synchronized (conn) {
       checkClosed();
-      return conn.isNotWritable();
+      return conn.writeQueueFull();
     }
   }
 
@@ -307,7 +301,7 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
     Buffer slice = data.slice(offset, end);
     WebSocketFrame frame;
     if (offset == 0 || !supportsContinuation) {
-      frame = new WebSocketFrameImpl(frameType, slice.getByteBuf(), isFinal);
+      frame = new WebSocketFrameImpl(frameType, ((BufferInternal)slice).getByteBuf(), isFinal);
     } else {
       frame = WebSocketFrame.continuationFrame(slice, isFinal);
     }
@@ -333,7 +327,7 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
   }
 
   private void writeBinaryFrameInternal(Buffer data) {
-    writeFrame(new WebSocketFrameImpl(WebSocketFrameType.BINARY, data.getByteBuf()));
+    writeFrame(new WebSocketFrameImpl(WebSocketFrameType.BINARY, ((BufferInternal)data).getByteBuf()));
   }
 
   private void writeTextFrameInternal(String str) {
@@ -441,9 +435,14 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
   }
 
   private void receiveFrame(WebSocketFrameInternal frame) {
+    Handler<WebSocketFrameInternal> frameAggregator;
     Handler<WebSocketFrameInternal> frameHandler;
     synchronized (conn) {
       frameHandler = this.frameHandler;
+      frameAggregator = this.frameAggregator;
+    }
+    if (frameAggregator != null) {
+      context.dispatch(frame, frameAggregator);
     }
     if (frameHandler != null) {
       context.dispatch(frame, frameHandler);
@@ -525,7 +524,7 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
     }
 
     private void handleTextFrame(WebSocketFrameInternal frame) {
-      Buffer frameBuffer = Buffer.buffer(frame.getBinaryData());
+      Buffer frameBuffer = BufferInternal.buffer(frame.getBinaryData());
       if (textMessageBuffer == null) {
         textMessageBuffer = frameBuffer;
       } else {
@@ -549,7 +548,7 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
     }
 
     private void handleBinaryFrame(WebSocketFrameInternal frame) {
-      Buffer frameBuffer = Buffer.buffer(frame.getBinaryData());
+      Buffer frameBuffer = BufferInternal.buffer(frame.getBinaryData());
       if (binaryMessageBuffer == null) {
         binaryMessageBuffer = frameBuffer;
       } else {
@@ -583,13 +582,24 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
   }
 
   @Override
-  public WebSocketBase textMessageHandler(Handler<String> handler) {
+  public WebSocket textMessageHandler(Handler<String> handler) {
     synchronized (conn) {
       checkClosed();
-      if (frameHandler == null || frameHandler.getClass() != FrameAggregator.class) {
-        frameHandler = new FrameAggregator();
+      if (handler != null) {
+        if (frameAggregator == null) {
+          frameAggregator = new FrameAggregator();
+        }
+        frameAggregator.textMessageHandler = handler;
+      } else {
+        if (frameAggregator != null) {
+          if (frameAggregator.binaryMessageHandler == null) {
+            frameAggregator = null;
+          } else {
+            frameAggregator.textMessageHandler = null;
+            frameAggregator.textMessageBuffer = null;
+          }
+        }
       }
-      ((FrameAggregator) frameHandler).textMessageHandler = handler;
       return this;
     }
   }
@@ -598,16 +608,27 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
   public S binaryMessageHandler(Handler<Buffer> handler) {
     synchronized (conn) {
       checkClosed();
-      if (frameHandler == null || frameHandler.getClass() != FrameAggregator.class) {
-        frameHandler = new FrameAggregator();
+      if (handler != null) {
+        if (frameAggregator == null) {
+          frameAggregator = new FrameAggregator();
+        }
+        frameAggregator.binaryMessageHandler = handler;
+      } else {
+        if (frameAggregator != null) {
+          if (frameAggregator.textMessageHandler == null) {
+            frameAggregator = null;
+          } else {
+            frameAggregator.binaryMessageHandler = null;
+            frameAggregator.binaryMessageBuffer = null;
+          }
+        }
       }
-      ((FrameAggregator) frameHandler).binaryMessageHandler = handler;
       return (S) this;
     }
   }
 
   @Override
-  public WebSocketBase pongHandler(Handler<Buffer> handler) {
+  public WebSocket pongHandler(Handler<Buffer> handler) {
     synchronized (conn) {
       checkClosed();
       this.pongHandler = handler;
@@ -621,17 +642,12 @@ public abstract class WebSocketImplBase<S extends WebSocketBase> implements WebS
     }
   }
 
-  void handleWritabilityChanged(boolean writable) {
+  void handleWriteQueueDrained(Void v) {
     Handler<Void> handler;
     synchronized (conn) {
-      boolean skip = this.writable && !writable;
-      this.writable = writable;
       handler = drainHandler;
-      if (handler == null || skip) {
-        return;
-      }
     }
-    context.dispatch(null, handler);
+    context.dispatch(handler);
   }
 
   void handleException(Throwable t) {

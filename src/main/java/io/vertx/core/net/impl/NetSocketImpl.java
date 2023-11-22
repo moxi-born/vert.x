@@ -19,19 +19,15 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.CharsetUtil;
 import io.netty.util.ReferenceCounted;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
-import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.MessageConsumer;
 import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.future.PromiseInternal;
-import io.vertx.core.impl.logging.Logger;
-import io.vertx.core.impl.logging.LoggerFactory;
-import io.vertx.core.net.NetSocket;
-import io.vertx.core.net.SocketAddress;
+import io.vertx.core.net.*;
 import io.vertx.core.spi.metrics.TCPMetrics;
 import io.vertx.core.streams.impl.InboundBuffer;
 
@@ -52,34 +48,40 @@ import java.util.UUID;
  */
 public class NetSocketImpl extends ConnectionBase implements NetSocketInternal {
 
-  private static final Logger log = LoggerFactory.getLogger(NetSocketImpl.class);
-
   private final String writeHandlerID;
-  private final SslChannelProvider sslChannelProvider;
+  private final SSLHelper sslHelper;
+  private final SSLOptions sslOptions;
   private final SocketAddress remoteAddress;
   private final TCPMetrics metrics;
   private final InboundBuffer<Object> pending;
   private final String negotiatedApplicationLayerProtocol;
   private Handler<Void> endHandler;
-  private Handler<Void> drainHandler;
+  private volatile Handler<Void> drainHandler;
   private MessageConsumer registration;
   private Handler<Buffer> handler;
   private Handler<Object> messageHandler;
   private Handler<Object> eventHandler;
 
-  public NetSocketImpl(ContextInternal context, ChannelHandlerContext channel, SslChannelProvider sslChannelProvider, TCPMetrics metrics, boolean registerWriteHandler) {
-    this(context, channel, null, sslChannelProvider, metrics, null, registerWriteHandler);
+  public NetSocketImpl(ContextInternal context,
+                       ChannelHandlerContext channel,
+                       SSLHelper sslHelper,
+                       SSLOptions sslOptions,
+                       TCPMetrics metrics,
+                       boolean registerWriteHandler) {
+    this(context, channel, null, sslHelper, sslOptions, metrics, null, registerWriteHandler);
   }
 
   public NetSocketImpl(ContextInternal context,
                        ChannelHandlerContext channel,
                        SocketAddress remoteAddress,
-                       SslChannelProvider sslChannelProvider,
+                       SSLHelper sslHelper,
+                       SSLOptions sslOptions,
                        TCPMetrics metrics,
                        String negotiatedApplicationLayerProtocol,
                        boolean registerWriteHandler) {
     super(context, channel);
-    this.sslChannelProvider = sslChannelProvider;
+    this.sslHelper = sslHelper;
+    this.sslOptions = sslOptions;
     this.writeHandlerID = registerWriteHandler ? "__vertx.net." + UUID.randomUUID() : null;
     this.remoteAddress = remoteAddress;
     this.metrics = metrics;
@@ -129,7 +131,7 @@ public class NetSocketImpl extends ConnectionBase implements NetSocketInternal {
   }
 
   @Override
-  public synchronized Future<Void> writeMessage(Object message) {
+  public Future<Void> writeMessage(Object message) {
     PromiseInternal<Void> promise = context.promise();
     writeToChannel(message, promise);
     return promise.future();
@@ -142,7 +144,7 @@ public class NetSocketImpl extends ConnectionBase implements NetSocketInternal {
 
   @Override
   public Future<Void> write(Buffer data) {
-    return writeMessage(data.getByteBuf());
+    return writeMessage(((BufferInternal)data).getByteBuf());
   }
 
   @Override
@@ -206,7 +208,15 @@ public class NetSocketImpl extends ConnectionBase implements NetSocketInternal {
 
   @Override
   public boolean writeQueueFull() {
-    return isNotWritable();
+    return super.writeQueueFull();
+  }
+
+  @Override
+  protected void writeQueueDrained() {
+    Handler<Void> handler = drainHandler;
+    if (handler != null) {
+      context.emit(null, handler);
+    }
   }
 
   private synchronized Handler<Void> endHandler() {
@@ -222,7 +232,6 @@ public class NetSocketImpl extends ConnectionBase implements NetSocketInternal {
   @Override
   public synchronized NetSocket drainHandler(Handler<Void> drainHandler) {
     this.drainHandler = drainHandler;
-    vertx.runOnContext(v -> callDrainHandler()); //If the channel is already drained, we want to call it immediately
     return this;
   }
 
@@ -253,39 +262,77 @@ public class NetSocketImpl extends ConnectionBase implements NetSocketInternal {
   }
 
   @Override
-  public Future<Void> upgradeToSsl() {
-    return upgradeToSsl((String) null);
-  }
-
-  @Override
   public Future<Void> upgradeToSsl(String serverName) {
-    PromiseInternal<Void> promise = context.promise();
-    if (chctx.pipeline().get("ssl") == null) {
-      ChannelPromise flush = chctx.newPromise();
-      flush(flush);
-      flush.addListener(fut -> {
-        if (fut.isSuccess()) {
-          ChannelPromise channelPromise = chctx.newPromise();
-          chctx.pipeline().addFirst("handshaker", new SslHandshakeCompletionHandler(channelPromise));
-          channelPromise.addListener(promise);
-          ChannelHandler sslHandler;
-          if (remoteAddress != null) {
-            sslHandler = sslChannelProvider.createClientSslHandler(remoteAddress, serverName, false);
-          } else {
-            sslHandler = sslChannelProvider.createServerHandler();
-          }
-          chctx.pipeline().addFirst("ssl", sslHandler);
-        } else {
-          promise.fail(fut.cause());
-        }
-      });
-    }
-    return promise.future();
+    return sslUpgrade(serverName, sslOptions);
   }
 
   @Override
-  protected void handleInterestedOpsChanged() {
-    context.emit(null, v -> callDrainHandler());
+  public Future<Void> upgradeToSsl(SSLOptions sslOptions, String serverName) {
+    return sslUpgrade(serverName, sslOptions);
+  }
+
+  private Future<Void> sslUpgrade(String serverName, SSLOptions sslOptions) {
+    if (sslOptions == null) {
+      return context.failedFuture("Missing SSL options");
+    }
+    if (remoteAddress != null && !(sslOptions instanceof ClientSSLOptions)) {
+      return context.failedFuture("Client socket upgrade must use ClientSSLOptions");
+    } else if (remoteAddress == null && !(sslOptions instanceof ServerSSLOptions)) {
+      return context.failedFuture("Server socket upgrade must use ServerSSLOptions");
+    }
+    if (chctx.pipeline().get("ssl") == null) {
+      doPause();
+      PromiseInternal<Void> flush = context.promise();
+      flush(flush);
+      return flush
+        .compose(v -> {
+          if (sslOptions instanceof ClientSSLOptions) {
+            ClientSSLOptions clientSSLOptions =  (ClientSSLOptions) sslOptions;
+            return sslHelper.resolveSslChannelProvider(
+              sslOptions,
+              clientSSLOptions.getHostnameVerificationAlgorithm(),
+              false,
+              null,
+              null,
+              context);
+          } else {
+            ServerSSLOptions serverSSLOptions = (ServerSSLOptions) sslOptions;
+            return sslHelper.resolveSslChannelProvider(
+              sslOptions,
+              "",
+              serverSSLOptions.isSni(),
+              serverSSLOptions.getClientAuth(),
+              null, context);
+          }
+        })
+        .transform(ar -> {
+          Future<Void> f;
+          if (ar.succeeded()) {
+            SslChannelProvider sslChannelProvider = ar.result();
+            ChannelPromise channelPromise = chctx.newPromise();
+            chctx.pipeline().addFirst("handshaker", new SslHandshakeCompletionHandler(channelPromise));
+            ChannelHandler sslHandler;
+            if (sslOptions instanceof ClientSSLOptions) {
+              ClientSSLOptions clientSSLOptions = (ClientSSLOptions) sslOptions;
+              sslHandler = sslChannelProvider.createClientSslHandler(remoteAddress, serverName, sslOptions.isUseAlpn(), clientSSLOptions.isTrustAll(), clientSSLOptions.getSslHandshakeTimeout(), clientSSLOptions.getSslHandshakeTimeoutUnit());
+            } else {
+              sslHandler = sslChannelProvider.createServerHandler(sslOptions.isUseAlpn(), sslOptions.getSslHandshakeTimeout(), sslOptions.getSslHandshakeTimeoutUnit());
+            }
+            chctx.pipeline().addFirst("ssl", sslHandler);
+            PromiseInternal<Void> p = context.promise();
+            channelPromise.addListener(p);
+            f = p.future();
+          } else {
+            f = context.failedFuture(ar.cause());
+          }
+          if (!pending.isPaused()) {
+            doResume();
+          }
+          return f;
+        });
+    } else {
+      throw new IllegalStateException(); // ???
+    }
   }
 
   @Override
@@ -324,7 +371,7 @@ public class NetSocketImpl extends ConnectionBase implements NetSocketInternal {
       if (msg instanceof ByteBuf) {
         msg = VertxHandler.safeBuffer((ByteBuf) msg);
         ByteBuf byteBuf = (ByteBuf) msg;
-        Buffer buffer = Buffer.buffer(byteBuf);
+        Buffer buffer = BufferInternal.buffer(byteBuf);
         if (!pending.write(buffer)) {
           doPause();
         }
@@ -338,14 +385,6 @@ public class NetSocketImpl extends ConnectionBase implements NetSocketInternal {
       if (msg instanceof ReferenceCounted && (!(msg instanceof ByteBuf))) {
         ReferenceCounted refCounter = (ReferenceCounted) msg;
         refCounter.release();
-      }
-    }
-  }
-
-  private synchronized void callDrainHandler() {
-    if (drainHandler != null) {
-      if (!writeQueueFull()) {
-        drainHandler.handle(null);
       }
     }
   }

@@ -16,8 +16,7 @@ import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.core.MultiMap;
 import io.vertx.core.VertxException;
 import io.vertx.core.json.JsonObject;
-import io.vertx.core.net.ProxyOptions;
-import io.vertx.core.net.SocketAddress;
+import io.vertx.core.net.*;
 
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -76,20 +75,33 @@ public class RequestOptions {
   public static final boolean DEFAULT_FOLLOW_REDIRECTS = false;
 
   /**
-   * The default request timeout = {@code 0} (disabled)
+   * The default request timeout = {@code -1L} (disabled)
    */
-  public static final long DEFAULT_TIMEOUT = 0;
+  public static final long DEFAULT_TIMEOUT = -1L;
+
+  /**
+   * The default connect timeout = {@code -1L} (disabled)
+   */
+  public static final long DEFAULT_CONNECT_TIMEOUT = -1L;
+
+  /**
+   * The default idle timeout = {@code -1L} (disabled)
+   */
+  public static final long DEFAULT_IDLE_TIMEOUT = -1L;
 
   private ProxyOptions proxyOptions;
-  private SocketAddress server;
+  private Address server;
   private HttpMethod method;
   private String host;
   private Integer port;
   private Boolean ssl;
+  private ClientSSLOptions sslOptions;;
   private String uri;
   private MultiMap headers;
   private boolean followRedirects;
   private long timeout;
+  private long connectTimeout;
+  private long idleTimeout;
   private String traceOperation;
 
   /**
@@ -102,9 +114,12 @@ public class RequestOptions {
     host = DEFAULT_HOST;
     port = DEFAULT_PORT;
     ssl = DEFAULT_SSL;
+    sslOptions = null;
     uri = DEFAULT_URI;
     followRedirects = DEFAULT_FOLLOW_REDIRECTS;
     timeout = DEFAULT_TIMEOUT;
+    connectTimeout = DEFAULT_CONNECT_TIMEOUT;
+    idleTimeout = DEFAULT_IDLE_TIMEOUT;
     traceOperation = null;
   }
 
@@ -120,8 +135,11 @@ public class RequestOptions {
     setHost(other.host);
     setPort(other.port);
     setSsl(other.ssl);
+    sslOptions = other.sslOptions != null ? new ClientSSLOptions(other.sslOptions) : null;
     setURI(other.uri);
     setFollowRedirects(other.followRedirects);
+    setIdleTimeout(other.idleTimeout);
+    setConnectTimeout(other.connectTimeout);
     setTimeout(other.timeout);
     if (other.headers != null) {
       setHeaders(MultiMap.caseInsensitiveMultiMap().setAll(other.headers));
@@ -195,7 +213,7 @@ public class RequestOptions {
    *
    * @return the server address
    */
-  public SocketAddress getServer() {
+  public Address getServer() {
     return server;
   }
 
@@ -209,7 +227,7 @@ public class RequestOptions {
    *
    * @return a reference to this, so the API can be used fluently
    */
-  public RequestOptions setServer(SocketAddress server) {
+  public RequestOptions setServer(Address server) {
     this.server = server;
     return this;
   }
@@ -292,6 +310,25 @@ public class RequestOptions {
   }
 
   /**
+   * @return the SSL options
+   */
+  public ClientSSLOptions getSslOptions() {
+    return sslOptions;
+  }
+
+  /**
+   * Set the SSL options to use.
+   * <p>
+   * When none is provided, the client SSL options will be used instead.
+   * @param sslOptions the SSL options to use
+   * @return a reference to this, so the API can be used fluently
+   */
+  public RequestOptions setSslOptions(ClientSSLOptions sslOptions) {
+    this.sslOptions = sslOptions;
+    return this;
+  }
+
+  /**
    * @return the request relative URI
    */
   public String getURI() {
@@ -328,24 +365,75 @@ public class RequestOptions {
   }
 
   /**
-   * @return the amount of time after which if the request does not return any data within the timeout period an
-   *         {@link java.util.concurrent.TimeoutException} will be passed to the exception handler and
-   *         the request will be closed.
+   * @see #setTimeout(long)
    */
   public long getTimeout() {
     return timeout;
   }
 
   /**
-   * Sets the amount of time after which if the request does not return any data within the timeout period an
-   * {@link java.util.concurrent.TimeoutException} will be passed to the exception handler and
-   * the request will be closed.
+   * Sets both connect and idle timeouts for the request
+   *
+   * <ul>
+   *   <li><i>connect timeout</i>: if the request is not obtained from the client within the timeout period, the {@code Future<HttpClientRequest>}
+   *   obtained from the client is failed with a {@link java.util.concurrent.TimeoutException}.</li>
+   *   <li><i>idle timeout</i>: if the request does not return any data within the timeout period, the request/response is closed and the
+   *   related futures are failed with a {@link java.util.concurrent.TimeoutException}, e.g. {@code Future<HttpClientResponse>}
+   *   or {@code Future<Buffer>} response body.</li>
+   * </ul>
+   *
+   * The connect and idle timeouts can be set separately using {@link #setConnectTimeout(long)} and {@link #setIdleTimeout(long)}
+   */
+  public RequestOptions setTimeout(long timeout) {
+    this.timeout = timeout;
+    return this;
+  }
+
+  /**
+   * @return the amount of time after which, if the request is not obtained from the client within the timeout period,
+   *         the {@code Future<HttpClientRequest>} obtained from the client is failed with a {@link java.util.concurrent.TimeoutException}
+   */
+  public long getConnectTimeout() {
+    return connectTimeout;
+  }
+
+  /**
+   * Sets the amount of time after which, if the request is not obtained from the client within the timeout period,
+   * the {@code Future<HttpClientRequest>} obtained from the client is failed with a {@link java.util.concurrent.TimeoutException}.
+   *
+   * Note this is not related to the TCP {@link HttpClientOptions#setConnectTimeout(int)} option, when a request is made against
+   * a pooled HTTP client, the timeout applies to the duration to obtain a connection from the pool to serve the request, the timeout
+   * might fire because the server does not respond in time or the pool is too busy to serve a request.
    *
    * @param timeout the amount of time in milliseconds.
    * @return a reference to this, so the API can be used fluently
    */
-  public RequestOptions setTimeout(long timeout) {
-    this.timeout = timeout;
+  public RequestOptions setConnectTimeout(long timeout) {
+    this.connectTimeout = timeout;
+    return this;
+  }
+
+  /**
+   * @return the amount of time after which, if the request does not return any data within the timeout period,
+   *         the request/response is closed and the related futures are failed with a {@link java.util.concurrent.TimeoutException}
+   */
+  public long getIdleTimeout() {
+    return idleTimeout;
+  }
+
+  /**
+   * Sets the amount of time after which, if the request does not return any data within the timeout period,
+   * the request/response is closed and the related futures are failed with a {@link java.util.concurrent.TimeoutException},
+   * e.g. {@code Future<HttpClientResponse>} or {@code Future<Buffer>} response body.
+   *
+   * <p/>The timeout starts after a connection is obtained from the client, similar to calling
+   * {@link HttpClientRequest#idleTimeout(long)}.
+   *
+   * @param timeout the amount of time in milliseconds.
+   * @return a reference to this, so the API can be used fluently
+   */
+  public RequestOptions setIdleTimeout(long timeout) {
+    this.idleTimeout = timeout;
     return this;
   }
 
@@ -555,13 +643,15 @@ public class RequestOptions {
     if (method != null) {
       json.put("method", method.name());
     }
-    if (this.server != null) {
+    Address serverAddr = this.server;
+    if (serverAddr instanceof SocketAddress) {
+      SocketAddress socketAddr = (SocketAddress) serverAddr;
       JsonObject server = new JsonObject();
-      if (this.server.isInetSocket()) {
-        server.put("host", this.server.host());
-        server.put("port", this.server.port());
+      if (socketAddr.isInetSocket()) {
+        server.put("host", socketAddr.host());
+        server.put("port", socketAddr.port());
       } else {
-        server.put("path", this.server.path());
+        server.put("path", socketAddr.path());
       }
       json.put("server", server);
     }

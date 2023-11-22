@@ -16,7 +16,6 @@ import io.vertx.codegen.annotations.DataObject;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonObject;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -52,8 +51,6 @@ public class NetClientOptions extends ClientOptionsBase {
 
   private int reconnectAttempts;
   private long reconnectInterval;
-  private String hostnameVerificationAlgorithm;
-  private List<String> applicationLayerProtocols;
   private boolean registerWriteHandler;
 
   /**
@@ -73,8 +70,6 @@ public class NetClientOptions extends ClientOptionsBase {
     super(other);
     this.reconnectAttempts = other.getReconnectAttempts();
     this.reconnectInterval = other.getReconnectInterval();
-    this.hostnameVerificationAlgorithm = other.getHostnameVerificationAlgorithm();
-    this.applicationLayerProtocols = other.applicationLayerProtocols != null ? new ArrayList<>(other.applicationLayerProtocols) : null;
     this.registerWriteHandler = other.registerWriteHandler;
   }
 
@@ -101,7 +96,6 @@ public class NetClientOptions extends ClientOptionsBase {
   private void init() {
     this.reconnectAttempts = DEFAULT_RECONNECT_ATTEMPTS;
     this.reconnectInterval = DEFAULT_RECONNECT_INTERVAL;
-    this.hostnameVerificationAlgorithm = DEFAULT_HOSTNAME_VERIFICATION_ALGORITHM;
     this.registerWriteHandler = DEFAULT_REGISTER_WRITE_HANDLER;
   }
 
@@ -190,41 +184,9 @@ public class NetClientOptions extends ClientOptionsBase {
   }
 
   @Override
-  public NetClientOptions setKeyStoreOptions(JksOptions options) {
-    super.setKeyStoreOptions(options);
-    return this;
-  }
-
-  @Override
-  public NetClientOptions setPfxKeyCertOptions(PfxOptions options) {
-    return (NetClientOptions) super.setPfxKeyCertOptions(options);
-  }
-
-  @Override
-  public NetClientOptions setPemKeyCertOptions(PemKeyCertOptions options) {
-    return (NetClientOptions) super.setPemKeyCertOptions(options);
-  }
-
-  @Override
   public NetClientOptions setTrustOptions(TrustOptions options) {
     super.setTrustOptions(options);
     return this;
-  }
-
-  @Override
-  public NetClientOptions setTrustStoreOptions(JksOptions options) {
-    super.setTrustStoreOptions(options);
-    return this;
-  }
-
-  @Override
-  public NetClientOptions setPemTrustOptions(PemTrustOptions options) {
-    return (NetClientOptions) super.setPemTrustOptions(options);
-  }
-
-  @Override
-  public NetClientOptions setPfxTrustOptions(PfxOptions options) {
-    return (NetClientOptions) super.setPfxTrustOptions(options);
   }
 
   @Override
@@ -261,11 +223,6 @@ public class NetClientOptions extends ClientOptionsBase {
   }
 
   @Override
-  public NetClientOptions setJdkSslEngineOptions(JdkSSLEngineOptions sslEngineOptions) {
-    return (NetClientOptions) super.setJdkSslEngineOptions(sslEngineOptions);
-  }
-
-  @Override
   public NetClientOptions setTcpFastOpen(boolean tcpFastOpen) {
     return (NetClientOptions) super.setTcpFastOpen(tcpFastOpen);
   }
@@ -278,11 +235,6 @@ public class NetClientOptions extends ClientOptionsBase {
   @Override
   public NetClientOptions setTcpQuickAck(boolean tcpQuickAck) {
     return (NetClientOptions) super.setTcpQuickAck(tcpQuickAck);
-  }
-
-  @Override
-  public ClientOptionsBase setOpenSslEngineOptions(OpenSSLEngineOptions sslEngineOptions) {
-    return super.setOpenSslEngineOptions(sslEngineOptions);
   }
 
   @Override
@@ -350,9 +302,9 @@ public class NetClientOptions extends ClientOptionsBase {
   /**
    * @return  the value of the hostname verification algorithm
    */
-
   public String getHostnameVerificationAlgorithm() {
-    return hostnameVerificationAlgorithm;
+    ClientSSLOptions o = getSslOptions();
+    return o != null ? o.getHostnameVerificationAlgorithm() : DEFAULT_HOSTNAME_VERIFICATION_ALGORITHM;
   }
 
   /**
@@ -365,7 +317,7 @@ public class NetClientOptions extends ClientOptionsBase {
 
   public NetClientOptions setHostnameVerificationAlgorithm(String hostnameVerificationAlgorithm) {
     Objects.requireNonNull(hostnameVerificationAlgorithm, "hostnameVerificationAlgorithm can not be null!");
-    this.hostnameVerificationAlgorithm = hostnameVerificationAlgorithm;
+    getOrCreateSSLOptions().setHostnameVerificationAlgorithm(hostnameVerificationAlgorithm);
     return this;
   }
 
@@ -373,7 +325,8 @@ public class NetClientOptions extends ClientOptionsBase {
    * @return the list of application-layer protocols send during the Application-Layer Protocol Negotiation.
    */
   public List<String> getApplicationLayerProtocols() {
-    return applicationLayerProtocols;
+    ClientSSLOptions o = getSslOptions();
+    return o != null ? o.getApplicationLayerProtocols() : null;
   }
 
   /**
@@ -383,7 +336,7 @@ public class NetClientOptions extends ClientOptionsBase {
    * @return a reference to this, so the API can be used fluently
    */
   public NetClientOptions setApplicationLayerProtocols(List<String> protocols) {
-    this.applicationLayerProtocols = protocols;
+    getOrCreateSSLOptions().setApplicationLayerProtocols(protocols);
     return this;
   }
 

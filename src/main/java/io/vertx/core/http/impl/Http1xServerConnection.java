@@ -18,18 +18,7 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.EventLoop;
 import io.netty.handler.codec.DecoderResult;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.DefaultHttpRequest;
-import io.netty.handler.codec.http.EmptyHttpHeaders;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.HttpContent;
-import io.netty.handler.codec.http.DefaultHttpContent;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.handler.codec.http.HttpObject;
-import io.netty.handler.codec.http.HttpRequest;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.WebSocketDecoderConfig;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketHandshakeException;
@@ -37,12 +26,14 @@ import io.netty.handler.codec.http.websocketx.WebSocketServerHandshaker;
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshakerFactory;
 import io.netty.handler.codec.http.websocketx.WebSocketVersion;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.concurrent.FutureListener;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.ServerWebSocket;
@@ -51,7 +42,9 @@ import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.impl.logging.Logger;
 import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.impl.MessageWrite;
 import io.vertx.core.net.impl.NetSocketImpl;
+import io.vertx.core.net.impl.SSLHelper;
 import io.vertx.core.net.impl.SslChannelProvider;
 import io.vertx.core.net.impl.VertxHandler;
 import io.vertx.core.spi.metrics.HttpServerMetrics;
@@ -88,8 +81,6 @@ import static io.vertx.core.spi.metrics.Metrics.*;
  */
 public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocketImpl> implements HttpServerConnection {
 
-  private static final Logger log = LoggerFactory.getLogger(Http1xServerConnection.class);
-
   private final String serverOrigin;
   private final Supplier<ContextInternal> streamContextSupplier;
   private final SslChannelProvider sslChannelProvider;
@@ -98,17 +89,19 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
 
   private Http1xServerRequest requestInProgress;
   private Http1xServerRequest responseInProgress;
+  private boolean keepAlive;
   private boolean channelPaused;
-  private boolean writable;
   private Handler<HttpServerRequest> requestHandler;
   private Handler<HttpServerRequest> invalidRequestHandler;
 
   final HttpServerMetrics metrics;
   final boolean handle100ContinueAutomatically;
   final HttpServerOptions options;
+  final SSLHelper sslHelper;
 
   public Http1xServerConnection(Supplier<ContextInternal> streamContextSupplier,
                                 SslChannelProvider sslChannelProvider,
+                                SSLHelper sslHelper,
                                 HttpServerOptions options,
                                 ChannelHandlerContext chctx,
                                 ContextInternal context,
@@ -118,11 +111,12 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
     this.serverOrigin = serverOrigin;
     this.streamContextSupplier = streamContextSupplier;
     this.options = options;
+    this.sslHelper = sslHelper;
     this.sslChannelProvider = sslChannelProvider;
     this.metrics = metrics;
     this.handle100ContinueAutomatically = options.isHandle100ContinueAutomatically();
     this.tracingPolicy = options.getTracingPolicy();
-    this.writable = true;
+    this.keepAlive = true;
   }
 
   TracingPolicy tracingPolicy() {
@@ -148,6 +142,10 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
 
   public void handleMessage(Object msg) {
     assert msg != null;
+    if (requestInProgress == null && !keepAlive && webSocket == null) {
+      // Discard message
+      return;
+    }
     // fast-path first
     if (msg == LastHttpContent.EMPTY_LAST_CONTENT) {
       onEnd();
@@ -162,7 +160,8 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
           return;
         }
         responseInProgress = requestInProgress;
-        req.handleBegin(writable);
+        keepAlive = HttpUtils.isKeepAlive(request);
+        req.handleBegin(keepAlive);
         Handler<HttpServerRequest> handler = request.decoderResult().isSuccess() ? requestHandler : invalidRequestHandler;
         req.context.emit(req, handler);
     } else {
@@ -191,7 +190,7 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
       handleError(content);
       return;
     }
-    Buffer buffer = Buffer.buffer(VertxHandler.safeBuffer(content.content()));
+    Buffer buffer = BufferInternal.buffer(VertxHandler.safeBuffer(content.content()));
     Http1xServerRequest request;
     synchronized (this) {
       request = requestInProgress;
@@ -204,12 +203,39 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
   }
 
   private void onEnd() {
+    boolean close;
     Http1xServerRequest request;
     synchronized (this) {
       request = requestInProgress;
       requestInProgress = null;
+      close = !keepAlive && responseInProgress == null;
     }
     request.context.execute(request, Http1xServerRequest::handleEnd);
+    if (close) {
+      flushAndClose();
+    }
+  }
+
+  private void flushAndClose() {
+    ChannelPromise channelFuture = channelFuture();
+    writeToChannel(Unpooled.EMPTY_BUFFER, channelFuture);
+    channelFuture.addListener(fut -> close());
+  }
+
+  void write(HttpObject msg, PromiseInternal<Void> promise) {
+    writeToChannel(new MessageWrite() {
+      @Override
+      public void write() {
+        Http1xServerConnection.this.write(msg, false, promise == null ? voidPromise : wrap(promise));
+        if (msg instanceof LastHttpContent) {
+          responseComplete();
+        }
+      }
+      @Override
+      public void cancel(Throwable cause) {
+        promise.fail(cause);
+      }
+    });
   }
 
   void responseComplete() {
@@ -222,10 +248,18 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
       responseInProgress = null;
       DecoderResult result = request.decoderResult();
       if (result.isSuccess()) {
-        Http1xServerRequest next = request.next();
-        if (next != null) {
-          // Handle pipelined request
-          handleNext(next);
+        if (keepAlive) {
+          Http1xServerRequest next = request.next();
+          if (next != null) {
+            // Handle pipelined request
+            handleNext(next);
+          }
+        } else {
+          if (requestInProgress == request || webSocket != null) {
+            // Deferred
+          } else {
+            flushAndClose();
+          }
         }
       } else {
         ChannelPromise channelFuture = channelFuture();
@@ -239,7 +273,8 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
 
   private void handleNext(Http1xServerRequest next) {
     responseInProgress = next;
-    next.handleBegin(writable);
+    keepAlive = HttpUtils.isKeepAlive(next.nettyRequest());
+    next.handleBegin(keepAlive);
     next.context.emit(next, next_ -> {
       next_.resume();
       Handler<HttpServerRequest> handler = next_.nettyRequest().decoderResult().isSuccess() ? requestHandler : invalidRequestHandler;
@@ -404,7 +439,7 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
       }
 
       pipeline.replace("handler", "handler", VertxHandler.create(ctx -> {
-        NetSocketImpl socket = new NetSocketImpl(context, ctx, sslChannelProvider, metrics, false) {
+        NetSocketImpl socket = new NetSocketImpl(context, ctx, sslHelper, options.getSslOptions(), metrics, false) {
           @Override
           protected void handleClosed() {
             if (metrics != null) {
@@ -437,26 +472,19 @@ public class Http1xServerConnection extends Http1xConnectionBase<ServerWebSocket
   }
 
   @Override
-  public void handleInterestedOpsChanged() {
-    writable = !isNotWritable();
-    ContextInternal context;
-    Handler<Boolean> handler;
-    synchronized (this) {
-      if (responseInProgress != null) {
-        context = responseInProgress.context;
-        handler = responseInProgress.response()::handleWritabilityChanged;
-      } else if (webSocket != null) {
-        context = webSocket.context;
-        handler = webSocket::handleWritabilityChanged;
-      } else {
-        return;
-      }
+  protected void writeQueueDrained() {
+    if (responseInProgress != null) {
+      ContextInternal context = responseInProgress.context;
+      Handler<Void> handler = responseInProgress.response()::handleWriteQueueDrained;
+      context.execute(handler);
+    } else {
+      super.writeQueueDrained();
     }
-    context.execute(writable, handler);
   }
 
-  void write100Continue() {
-    chctx.writeAndFlush(new DefaultFullHttpResponse(HTTP_1_1, CONTINUE));
+  void write100Continue(FutureListener<Void> listener) {
+    ChannelPromise promise = listener == null ? chctx.voidPromise() : chctx.newPromise().addListener(listener);
+    chctx.writeAndFlush(new DefaultFullHttpResponse(HTTP_1_1, CONTINUE), promise);
   }
 
   void write103EarlyHints(HttpHeaders headers, PromiseInternal<Void> promise) {

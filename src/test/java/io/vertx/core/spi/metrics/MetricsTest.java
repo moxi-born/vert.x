@@ -29,6 +29,7 @@ import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetClientOptions;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
+import io.vertx.core.spi.VertxMetricsFactory;
 import io.vertx.test.core.TestUtils;
 import io.vertx.test.core.VertxTestBase;
 import io.vertx.test.fakemetrics.*;
@@ -36,6 +37,7 @@ import io.vertx.test.tls.Trust;
 import org.junit.Test;
 
 import java.util.*;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -56,11 +58,20 @@ public class MetricsTest extends VertxTestBase {
 
   private HttpServer server;
   private HttpClient client;
+  private WebSocketClient wsClient;
+  private VertxMetricsFactory metricsFactory;
 
   protected void tearDown() throws Exception {
     if (client != null) {
       try {
         client.close();
+      } catch (IllegalStateException ignore) {
+        // Client was already closed by the test
+      }
+    }
+    if (wsClient != null) {
+      try {
+        wsClient.close();
       } catch (IllegalStateException ignore) {
         // Client was already closed by the test
       }
@@ -77,10 +88,19 @@ public class MetricsTest extends VertxTestBase {
   }
 
   @Override
-  protected VertxOptions getOptions() {
-    VertxOptions options = super.getOptions();
-    options.setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(new FakeMetricsFactory()));
-    return options;
+  public void setUp() throws Exception {
+    metricsFactory = new FakeMetricsFactory();
+    super.setUp();
+  }
+
+  @Override
+  protected VertxMetricsFactory getMetrics() {
+    return metricsFactory;
+  }
+
+  @Override
+  protected Vertx vertx() {
+    return super.vertx();
   }
 
   @Test
@@ -240,7 +260,7 @@ public class MetricsTest extends VertxTestBase {
   }
 
   @Test
-  public void testDiscardOnOverflow1() {
+  public void testDiscardOnOverflow1() throws Exception {
     startNodes(2);
     Vertx from = vertices[0], to = vertices[1];
     FakeEventBusMetrics toMetrics = FakeMetricsBase.getMetrics(to.eventBus());
@@ -333,7 +353,6 @@ public class MetricsTest extends VertxTestBase {
     assertEquals(1, metrics.getRegistrations().size());
     HandlerMetric registration = metrics.getRegistrations().get(0);
     assertEquals(ADDRESS1, registration.address);
-    assertEquals(null, registration.repliedAddress);
     consumer.unregister().onComplete(onSuccess(v1 -> {
       assertEquals(0, metrics.getRegistrations().size());
       consumer.unregister().onComplete(onSuccess(v2 -> {
@@ -388,7 +407,6 @@ public class MetricsTest extends VertxTestBase {
       to.eventBus().consumer(ADDRESS1, msg -> {
         HandlerMetric registration = assertRegistration(metrics);
         assertEquals(ADDRESS1, registration.address);
-        assertEquals(null, registration.repliedAddress);
         assertEquals(1, registration.scheduleCount.get());
         assertEquals(expectedLocalCount, registration.localScheduleCount.get());
         assertEquals(1, registration.deliveredCount.get());
@@ -407,7 +425,6 @@ public class MetricsTest extends VertxTestBase {
     }
     HandlerMetric registration = assertRegistration(metrics);
     assertEquals(ADDRESS1, registration.address);
-    assertEquals(null, registration.repliedAddress);
     from.eventBus().request(ADDRESS1, "ping").onComplete(onSuccess(reply -> {
       assertEquals(1, registration.scheduleCount.get());
       // This might take a little time
@@ -429,7 +446,6 @@ public class MetricsTest extends VertxTestBase {
       assertEquals(ADDRESS1, metrics.getRegistrations().get(0).address);
       assertWaitUntil(() -> metrics.getRegistrations().size() == 2);
       HandlerMetric registration = metrics.getRegistrations().get(1);
-      assertEquals(ADDRESS1, registration.repliedAddress);
       assertEquals(0, registration.scheduleCount.get());
       assertEquals(0, registration.deliveredCount.get());
       assertEquals(0, registration.localDeliveredCount.get());
@@ -443,13 +459,11 @@ public class MetricsTest extends VertxTestBase {
     vertx.eventBus().request(ADDRESS1, "ping").onComplete(onSuccess(reply -> {
       assertEquals(ADDRESS1, metrics.getRegistrations().get(0).address);
       HandlerMetric registration = replyRegistration.get();
-      assertEquals(ADDRESS1, registration.repliedAddress);
       assertEquals(1, registration.scheduleCount.get());
       assertEquals(1, registration.deliveredCount.get());
       assertEquals(1, registration.localDeliveredCount.get());
       vertx.runOnContext(v -> {
         assertEquals(ADDRESS1, metrics.getRegistrations().get(0).address);
-        assertEquals(ADDRESS1, registration.repliedAddress);
         assertEquals(1, registration.scheduleCount.get());
         assertEquals(1, registration.deliveredCount.get());
         assertEquals(1, registration.localDeliveredCount.get());
@@ -562,8 +576,8 @@ public class MetricsTest extends VertxTestBase {
       });
     });
     awaitFuture(server.listen(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST));
-    client = vertx.createHttpClient();
-    client.webSocket(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, "/").onComplete(onSuccess(ws -> {
+    wsClient = vertx.createWebSocketClient();
+    wsClient.connect(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, "/").onComplete(onSuccess(ws -> {
       ws.write(Buffer.buffer("wibble"));
       ws.handler(buff -> ws.close());
     }));
@@ -589,8 +603,8 @@ public class MetricsTest extends VertxTestBase {
       }));
     });
     awaitFuture(server.listen(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST));
-    client = vertx.createHttpClient();
-    client.webSocket(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, "/" + TestUtils.randomAlphaString(16))
+    wsClient = vertx.createWebSocketClient();
+    wsClient.connect(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, "/" + TestUtils.randomAlphaString(16))
       .onComplete(onSuccess(ws -> {
         ws.write(Buffer.buffer("wibble"));
         ws.handler(buff -> {
@@ -608,10 +622,10 @@ public class MetricsTest extends VertxTestBase {
       ws.handler(buff -> ws.close());
     });
     awaitFuture(server.listen(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST));
-    client = vertx.createHttpClient();
+    wsClient = vertx.createWebSocketClient();
     vertx.runOnContext(v -> {
-      client.webSocket(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, "/").onComplete(onSuccess(ws -> {
-        FakeHttpClientMetrics metrics = FakeMetricsBase.getMetrics(client);
+      wsClient.connect(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST, "/").onComplete(onSuccess(ws -> {
+        FakeHttpClientMetrics metrics = FakeMetricsBase.getMetrics(wsClient);
         WebSocketMetric metric = metrics.getMetric(ws);
         assertNotNull(metric);
         ws.closeHandler(closed -> {
@@ -774,7 +788,7 @@ public class MetricsTest extends VertxTestBase {
     }
     try {
       List<Future<?>> collect = servers.stream().map(server -> server.listen(8080)).collect(Collectors.toList());
-      CompositeFuture
+      Future
         .all(collect)
         .onSuccess(v -> {
           assertEquals("Was expecting a single metric", 1, servers.stream().map(FakeMetricsBase::getMetrics).distinct().count());
@@ -912,14 +926,13 @@ public class MetricsTest extends VertxTestBase {
     assertThat(metrics.getPoolSize(), is(getOptions().getInternalBlockingPoolSize()));
     assertThat(metrics.numberOfIdleThreads(), is(getOptions().getWorkerPoolSize()));
 
-    Handler<Promise<Void>> job = getSomeDumbTask();
+    Callable<Void> job = getSomeDumbTask();
 
     AtomicBoolean hadWaitingQueue = new AtomicBoolean();
     AtomicBoolean hadIdle = new AtomicBoolean();
     AtomicBoolean hadRunning = new AtomicBoolean();
     for (int i = 0; i < 100; i++) {
-      vertx.executeBlocking(
-          job).onComplete(
+      vertx.executeBlocking(job).onComplete(
           ar -> {
             if (metrics.numberOfWaitingTasks() > 0) {
               hadWaitingQueue.set(true);
@@ -964,7 +977,7 @@ public class MetricsTest extends VertxTestBase {
     Map<Integer, CountDownLatch> latches = new HashMap<>();
     for (int i = 0; i < count; i++) {
       CountDownLatch latch = latches.computeIfAbsent(i / num, k -> new CountDownLatch(num));
-      v.executeBlockingInternal(fut -> {
+      v.executeBlockingInternal(() -> {
         latch.countDown();
         try {
           awaitLatch(latch);
@@ -978,7 +991,7 @@ public class MetricsTest extends VertxTestBase {
         if (metrics.numberOfWaitingTasks() > 0) {
           hadWaitingQueue.set(true);
         }
-        fut.complete();
+        return null;
       }, false).onComplete(ar -> {
         if (metrics.numberOfIdleThreads() > 0) {
           hadIdle.set(true);
@@ -1069,7 +1082,11 @@ public class MetricsTest extends VertxTestBase {
   @Test
   public void testThreadPoolMetricsWithNamedExecuteBlocking() throws InterruptedException {
     vertx.close(); // Close the instance automatically created
-    vertx = Vertx.vertx(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(new FakeMetricsFactory())));
+    vertx = Vertx
+      .builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(new FakeMetricsFactory())
+      .build();
 
     WorkerExecutor workerExec = vertx.createSharedWorkerExecutor("my-pool", 10);
 
@@ -1080,7 +1097,7 @@ public class MetricsTest extends VertxTestBase {
     assertThat(metrics.getPoolSize(), is(10));
     assertThat(metrics.numberOfIdleThreads(), is(10));
 
-    Handler<Promise<Void>> job = getSomeDumbTask();
+    Callable<Void> job = getSomeDumbTask();
 
     AtomicBoolean hadWaitingQueue = new AtomicBoolean();
     AtomicBoolean hadIdle = new AtomicBoolean();
@@ -1135,14 +1152,14 @@ public class MetricsTest extends VertxTestBase {
     assertTrue(metrics2.isClosed());
   }
 
-  private Handler<Promise<Void>> getSomeDumbTask() {
-    return (future) -> {
+  private Callable<Void> getSomeDumbTask() {
+    return () -> {
       try {
         Thread.sleep(50);
       } catch (InterruptedException e) {
         Thread.currentThread().isInterrupted();
       }
-      future.complete(null);
+      return null;
     };
   }
 
@@ -1151,7 +1168,7 @@ public class MetricsTest extends VertxTestBase {
     assertSame(vertx, ((FakeVertxMetrics)FakeMetricsBase.getMetrics(vertx)).vertx());
     startNodes(1);
     assertSame(vertices[0], ((FakeVertxMetrics)FakeMetricsBase.getMetrics(vertices[0])).vertx());
-    EventLoopGroup group = vertx.nettyEventLoopGroup();
+    EventLoopGroup group = ((VertxInternal)vertx).nettyEventLoopGroup();
     Set<EventLoop> loops = new HashSet<>();
     int count = 0;
     while (true) {
@@ -1180,7 +1197,7 @@ public class MetricsTest extends VertxTestBase {
       .setSslEngineOptions(new JdkSSLEngineOptions())
       .setUseAlpn(true)
       .setSsl(true)
-      .setTrustStoreOptions(Trust.SERVER_JKS.get())
+      .setTrustOptions(Trust.SERVER_JKS.get())
       .setApplicationLayerProtocols(Collections.singletonList("h2")));
     CountDownLatch latch = new CountDownLatch(1);
     client.connect(HttpTestBase.DEFAULT_HTTP_PORT, HttpTestBase.DEFAULT_HTTP_HOST).onComplete(onSuccess(so -> {
@@ -1194,21 +1211,23 @@ public class MetricsTest extends VertxTestBase {
   @Test
   public void testServerLifecycle() {
     AtomicInteger lifecycle = new AtomicInteger();
-    Vertx vertx = Vertx.vertx(new VertxOptions().setMetricsOptions(new MetricsOptions()
-      .setEnabled(true)
-      .setFactory(options -> new VertxMetrics() {
-      @Override
-      public HttpServerMetrics<?, ?, ?> createHttpServerMetrics(HttpServerOptions options, SocketAddress localAddress) {
-        lifecycle.compareAndSet(0, 1);
-        return new HttpServerMetrics<Object, Object, Object>() {
-          @Override
-          public void close() {
-            lifecycle.compareAndSet(1, 2);
-            HttpServerMetrics.super.close();
-          }
-        };
-      }
-    })));
+    vertx = Vertx
+      .builder()
+      .with(new VertxOptions().setMetricsOptions(new MetricsOptions().setEnabled(true)))
+      .withMetrics(options -> new VertxMetrics() {
+        @Override
+        public HttpServerMetrics<?, ?, ?> createHttpServerMetrics(HttpServerOptions options, SocketAddress localAddress) {
+          lifecycle.compareAndSet(0, 1);
+          return new HttpServerMetrics<Object, Object, Object>() {
+            @Override
+            public void close() {
+              lifecycle.compareAndSet(1, 2);
+              HttpServerMetrics.super.close();
+            }
+          };
+        }
+      })
+      .build();
     vertx.createHttpServer().requestHandler(req -> {}).listen(8080, "localhost");
     vertx.close().onComplete(onSuccess(v -> {
       assertEquals(2, lifecycle.get());

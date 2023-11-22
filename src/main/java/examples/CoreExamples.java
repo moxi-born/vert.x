@@ -23,6 +23,8 @@ import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.SocketAddress;
+import io.vertx.core.spi.VertxMetricsFactory;
+import io.vertx.core.spi.cluster.ClusterManager;
 
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
@@ -67,10 +69,9 @@ public class CoreExamples {
   }
 
   public void example7(Vertx vertx) {
-    vertx.executeBlocking(promise -> {
+    vertx.executeBlocking(() -> {
       // Call some blocking API that takes a significant amount of time to return
-      String result = someAPI.blockingMethod("hello");
-      promise.complete(result);
+      return someAPI.blockingMethod("hello");
     }).onComplete(res -> {
       System.out.println("The result is: " + res.result());
     });
@@ -78,10 +79,9 @@ public class CoreExamples {
 
   public void workerExecutor1(Vertx vertx) {
     WorkerExecutor executor = vertx.createSharedWorkerExecutor("my-worker-pool");
-    executor.executeBlocking(promise -> {
+    executor.executeBlocking(() -> {
       // Call some blocking API that takes a significant amount of time to return
-      String result = someAPI.blockingMethod("hello");
-      promise.complete(result);
+      return someAPI.blockingMethod("hello");
     }).onComplete(res -> {
       System.out.println("The result is: " + res.result());
     });
@@ -109,6 +109,20 @@ public class CoreExamples {
     String blockingMethod(String str) {
       return str;
     }
+  }
+
+  public void vertxBuilder(VertxOptions options, VertxMetricsFactory metricsFactory) {
+    Vertx vertx = Vertx.builder()
+      .with(options)
+      .withMetrics(metricsFactory)
+      .build();
+  }
+
+  public void clusteredVertxBuilder(VertxOptions options, ClusterManager clusterManager) {
+    Future<Vertx> vertx = Vertx.builder()
+      .with(options)
+      .withClusterManager(clusterManager)
+      .buildClustered();
   }
 
   public void exampleFuture1(Vertx vertx, Handler<HttpServerRequest> requestHandler) {
@@ -178,7 +192,7 @@ public class CoreExamples {
 
     Future<NetServer> netServerFuture = netServer.listen();
 
-    CompositeFuture.all(httpServerFuture, netServerFuture).onComplete(ar -> {
+    Future.all(httpServerFuture, netServerFuture).onComplete(ar -> {
       if (ar.succeeded()) {
         // All servers started
       } else {
@@ -188,11 +202,11 @@ public class CoreExamples {
   }
 
   public void exampleFutureAll2(Future<?> future1, Future<?> future2, Future<?> future3) {
-    CompositeFuture.all(Arrays.asList(future1, future2, future3));
+    Future.all(Arrays.asList(future1, future2, future3));
   }
 
   public void exampleFutureAny1(Future<String> future1, Future<String> future2) {
-    CompositeFuture.any(future1, future2).onComplete(ar -> {
+    Future.any(future1, future2).onComplete(ar -> {
       if (ar.succeeded()) {
         // At least one is succeeded
       } else {
@@ -202,11 +216,11 @@ public class CoreExamples {
   }
 
   public void exampleFutureAny2(Future<?> f1, Future<?> f2, Future<?> f3) {
-    CompositeFuture.any(Arrays.asList(f1, f2, f3));
+    Future.any(Arrays.asList(f1, f2, f3));
   }
 
   public void exampleFutureJoin1(Future<?> future1, Future<?> future2, Future<?> future3) {
-    CompositeFuture.join(future1, future2, future3).onComplete(ar -> {
+    Future.join(future1, future2, future3).onComplete(ar -> {
       if (ar.succeeded()) {
         // All succeeded
       } else {
@@ -216,11 +230,16 @@ public class CoreExamples {
   }
 
   public void exampleFutureJoin2(Future<?> future1, Future<?> future2, Future<?> future3) {
-    CompositeFuture.join(Arrays.asList(future1, future2, future3));
+    Future.join(Arrays.asList(future1, future2, future3));
   }
 
   public void example7_1(Vertx vertx) {
-    DeploymentOptions options = new DeploymentOptions().setWorker(true);
+    DeploymentOptions options = new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER);
+    vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle", options);
+  }
+
+  public void example7_2(Vertx vertx) {
+    DeploymentOptions options = new DeploymentOptions().setThreadingModel(ThreadingModel.VIRTUAL_THREAD);
     vertx.deployVerticle("com.mycompany.MyOrderProcessorVerticle", options);
   }
 

@@ -56,6 +56,7 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.http.impl.Http1xOrH2CHandler;
 import io.vertx.core.http.impl.HttpUtils;
 import io.vertx.core.impl.Utils;
@@ -429,7 +430,8 @@ public class Http2ServerTest extends Http2TestBase {
       });
       HttpServerResponse resp = req.response();
       assertEquals(HttpMethod.GET, req.method());
-      assertEquals(DEFAULT_HTTPS_HOST_AND_PORT, req.host());
+      assertEquals(DEFAULT_HTTPS_HOST, req.authority().host());
+      assertEquals(DEFAULT_HTTPS_PORT, req.authority().port());
       assertEquals("/", req.path());
       assertTrue(req.isSSL());
       assertEquals(expectedStreamId.get(), req.streamId());
@@ -519,7 +521,7 @@ public class Http2ServerTest extends Http2TestBase {
       assertEquals("foo=foo_value&bar=bar_value_1&bar=bar_value_2", req.query());
       assertEquals("/some/path?foo=foo_value&bar=bar_value_1&bar=bar_value_2", req.uri());
       assertEquals("http://whatever.com/some/path?foo=foo_value&bar=bar_value_1&bar=bar_value_2", req.absoluteURI());
-      assertEquals("whatever.com", req.host());
+      assertEquals("whatever.com", req.authority().host());
       MultiMap params = req.params();
       Set<String> names = params.names();
       assertEquals(2, names.size());
@@ -634,7 +636,7 @@ public class Http2ServerTest extends Http2TestBase {
     ChannelFuture fut = client.connect(DEFAULT_HTTPS_PORT, DEFAULT_HTTPS_HOST, request -> {
       int id = request.nextStreamId();
       request.encoder.writeHeaders(request.context, id, POST("/").set("content-type", "text/plain"), 0, false, request.context.newPromise());
-      request.encoder.writeData(request.context, id, expectedContent.getByteBuf(), 0, true, request.context.newPromise());
+      request.encoder.writeData(request.context, id, ((BufferInternal)expectedContent).getByteBuf(), 0, true, request.context.newPromise());
       request.context.flush();
     });
     fut.sync();
@@ -680,7 +682,7 @@ public class Http2ServerTest extends Http2TestBase {
       int id = request.nextStreamId();
       request.encoder.writeHeaders(request.context, id, POST("/form").
           set("content-type", contentType).set("content-length", contentLength), 0, false, request.context.newPromise());
-      request.encoder.writeData(request.context, id, Buffer.buffer(body).getByteBuf(), 0, true, request.context.newPromise());
+      request.encoder.writeData(request.context, id, BufferInternal.buffer(body).getByteBuf(), 0, true, request.context.newPromise());
       request.context.flush();
     });
     fut.sync();
@@ -691,7 +693,7 @@ public class Http2ServerTest extends Http2TestBase {
   public void testConnect() throws Exception {
     server.requestHandler(req -> {
       assertEquals(HttpMethod.CONNECT, req.method());
-      assertEquals("whatever.com", req.host());
+      assertEquals("whatever.com", req.authority().host());
       assertNull(req.path());
       assertNull(req.query());
       assertNull(req.scheme());
@@ -758,7 +760,7 @@ public class Http2ServerTest extends Http2TestBase {
           if (writable) {
             Buffer buf = Buffer.buffer(chunk);
             expected.appendBuffer(buf);
-            request.encoder.writeData(request.context, id, buf.getByteBuf(), 0, false, request.context.newPromise());
+            request.encoder.writeData(request.context, id, ((BufferInternal)buf).getByteBuf(), 0, false, request.context.newPromise());
             request.context.flush();
             request.context.executor().execute(this::send);
           } else {
@@ -969,7 +971,7 @@ public class Http2ServerTest extends Http2TestBase {
       });
       Http2ConnectionEncoder encoder = request.encoder;
       encoder.writeHeaders(request.context, id, GET("/"), 0, false, request.context.newPromise());
-      encoder.writeData(request.context, id, Buffer.buffer("hello").getByteBuf(), 0, end, request.context.newPromise());
+      encoder.writeData(request.context, id, BufferInternal.buffer("hello").getByteBuf(), 0, end, request.context.newPromise());
     });
 
     fut.sync();
@@ -1009,7 +1011,7 @@ public class Http2ServerTest extends Http2TestBase {
       int id = request.nextStreamId();
       Http2ConnectionEncoder encoder = request.encoder;
       encoder.writeHeaders(request.context, id, GET("/"), 0, false, request.context.newPromise());
-      encoder.writeData(request.context, id, Buffer.buffer("hello").getByteBuf(), 0, false, request.context.newPromise());
+      encoder.writeData(request.context, id, BufferInternal.buffer("hello").getByteBuf(), 0, false, request.context.newPromise());
       bufReceived.future().onComplete(ar -> {
         encoder.writeRstStream(request.context, id, 10, request.context.newPromise());
         request.context.flush();
@@ -1291,6 +1293,11 @@ public class Http2ServerTest extends Http2TestBase {
   }
 
   @Test
+  public void testInvalidHost() throws Exception {
+    testMalformedRequestHeaders(new DefaultHttp2Headers().method("GET").scheme("http").authority(DEFAULT_HTTPS_HOST_AND_PORT).path("/").set("host", "something-else"));
+  }
+
+  @Test
   public void testConnectInvalidPath() throws Exception {
     testMalformedRequestHeaders(new DefaultHttp2Headers().method("CONNECT").path("/").authority(DEFAULT_HTTPS_HOST_AND_PORT));
   }
@@ -1385,7 +1392,7 @@ public class Http2ServerTest extends Http2TestBase {
       int id = request.nextStreamId();
       request.encoder.writeHeaders(request.context, id, GET("/"), 0, !data, request.context.newPromise());
       if (data) {
-        request.encoder.writeData(request.context, id, Buffer.buffer("hello").getByteBuf(), 0, true, request.context.newPromise());
+        request.encoder.writeData(request.context, id, BufferInternal.buffer("hello").getByteBuf(), 0, true, request.context.newPromise());
       }
     });
     fut.sync();
@@ -1456,7 +1463,7 @@ public class Http2ServerTest extends Http2TestBase {
         }
         @Override
         public int onDataRead(ChannelHandlerContext ctx, int streamId, ByteBuf data, int padding, boolean endOfStream) throws Http2Exception {
-          buffer.appendBuffer(Buffer.buffer(data.duplicate()));
+          buffer.appendBuffer(BufferInternal.buffer(data.duplicate()));
           if (endOfStream) {
             endStream();
           }
@@ -1513,7 +1520,7 @@ public class Http2ServerTest extends Http2TestBase {
         // ChannelFuture a = encoder.frameWriter().writeData(request.context, id, Buffer.buffer("hello").getByteBuf(), 12, false, request.context.newPromise());
         // normal frame    : 00 00 12 00 08 00 00 00 03 0c 68 65 6c 6c 6f 00 00 00 00 00 00 00 00 00 00 00 00
         // corrupted frame : 00 00 12 00 08 00 00 00 03 1F 68 65 6c 6c 6f 00 00 00 00 00 00 00 00 00 00 00 00
-        request.channel.write(Buffer.buffer(new byte[]{
+        request.channel.write(BufferInternal.buffer(new byte[]{
             0x00, 0x00, 0x12, 0x00, 0x08, 0x00, 0x00, 0x00, (byte)(id & 0xFF), 0x1F, 0x68, 0x65, 0x6c, 0x6c,
             0x6f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
         }).getByteBuf());
@@ -2147,7 +2154,7 @@ public class Http2ServerTest extends Http2TestBase {
     ChannelFuture fut = client.connect(DEFAULT_HTTPS_PORT, DEFAULT_HTTPS_HOST, request -> {
       int id = request.nextStreamId();
       request.encoder.writeHeaders(request.context, id, POST("/").add("content-encoding", "gzip"), 0, false, request.context.newPromise());
-      request.encoder.writeData(request.context, id, Buffer.buffer(expectedGzipped).getByteBuf(), 0, true, request.context.newPromise());
+      request.encoder.writeData(request.context, id, BufferInternal.buffer(expectedGzipped).getByteBuf(), 0, true, request.context.newPromise());
       request.context.flush();
     });
     fut.sync();
@@ -2196,7 +2203,7 @@ public class Http2ServerTest extends Http2TestBase {
               vertx.runOnContext(v -> {
                 assertEquals("100", headers.status().toString());
               });
-              request.encoder.writeData(request.context, id, Buffer.buffer("the-body").getByteBuf(), 0, true, request.context.newPromise());
+              request.encoder.writeData(request.context, id, BufferInternal.buffer("the-body").getByteBuf(), 0, true, request.context.newPromise());
               request.context.flush();
               break;
             case 1:
@@ -2299,7 +2306,7 @@ public class Http2ServerTest extends Http2TestBase {
             assertEquals("200", headers.status().toString());
             assertFalse(endStream);
           });
-          request.encoder.writeData(request.context, id, Buffer.buffer("some-data").getByteBuf(), 0, false, request.context.newPromise());
+          request.encoder.writeData(request.context, id, BufferInternal.buffer("some-data").getByteBuf(), 0, false, request.context.newPromise());
           request.context.flush();
         }
         StringBuilder received = new StringBuilder();
@@ -2312,7 +2319,7 @@ public class Http2ServerTest extends Http2TestBase {
             vertx.runOnContext(v -> {
               assertFalse(endOfStream);
             });
-            request.encoder.writeData(request.context, id, Buffer.buffer("last-data").getByteBuf(), 0, true, request.context.newPromise());
+            request.encoder.writeData(request.context, id, BufferInternal.buffer("last-data").getByteBuf(), 0, true, request.context.newPromise());
           } else if (endOfStream) {
             vertx.runOnContext(v -> {
               assertEquals("last-data", received.toString());
@@ -2434,7 +2441,7 @@ public class Http2ServerTest extends Http2TestBase {
           vertx.runOnContext(v -> {
             assertEquals(0, c);
           });
-          request.encoder.writeData(request.context, id, Buffer.buffer("some-data").getByteBuf(), 0, false, request.context.newPromise());
+          request.encoder.writeData(request.context, id, BufferInternal.buffer("some-data").getByteBuf(), 0, false, request.context.newPromise());
           request.context.flush();
         }
         StringBuilder received = new StringBuilder();
@@ -2443,7 +2450,7 @@ public class Http2ServerTest extends Http2TestBase {
           String s = data.toString(StandardCharsets.UTF_8);
           received.append(s);
           if (endOfStream) {
-            request.encoder.writeData(request.context, id, Buffer.buffer("last-data").getByteBuf(), 0, true, request.context.newPromise());
+            request.encoder.writeData(request.context, id, BufferInternal.buffer("last-data").getByteBuf(), 0, true, request.context.newPromise());
             vertx.runOnContext(v -> {
               assertEquals("some-data", received.toString());
               complete();
@@ -2523,7 +2530,9 @@ public class Http2ServerTest extends Http2TestBase {
         assertEquals(10, frame.type());
         assertEquals(253, frame.flags());
         assertEquals(expectedSend, frame.payload());
-        req.response().writeCustomFrame(12, 134, expectedRecv).end();
+        HttpServerResponse resp = req.response();
+        resp.writeCustomFrame(12, 134, expectedRecv);
+        resp.end();
       });
     });
     startServer(ctx);
@@ -2566,7 +2575,7 @@ public class Http2ServerTest extends Http2TestBase {
         }
       });
       request.encoder.writeHeaders(request.context, id, GET("/"), 0, false, request.context.newPromise());
-      request.encoder.writeFrame(request.context, (byte)10, id, new Http2Flags((short) 253), expectedSend.getByteBuf(), request.context.newPromise());
+      request.encoder.writeFrame(request.context, (byte)10, id, new Http2Flags((short) 253), ((BufferInternal)expectedSend).getByteBuf(), request.context.newPromise());
       request.context.flush();
     });
     fut.sync();
@@ -2641,7 +2650,11 @@ public class Http2ServerTest extends Http2TestBase {
 
   private void doRequest(HttpMethod method, Buffer expected, Handler<HttpConnection> connHandler, Promise<HttpClientResponse> fut) {
     if (connHandler != null) {
-      client.connectionHandler(connHandler);
+      client.close();
+      client = vertx.httpClientBuilder()
+        .with(createBaseClientOptions())
+        .withConnectHandler(connHandler)
+        .build();
     }
     client.request(new RequestOptions(requestOptions).setMethod(method)).onComplete(onSuccess(req -> {
       req
@@ -3194,7 +3207,7 @@ public class Http2ServerTest extends Http2TestBase {
       request.context.flush();
       request.encoder.writePriority(request.context, id, requestStreamPriority2.getDependency(), requestStreamPriority2.getWeight(), requestStreamPriority2.isExclusive(), request.context.newPromise());
       request.context.flush();
-      request.encoder.writeData(request.context, id, Buffer.buffer("hello").getByteBuf(), 0, true, request.context.newPromise());
+      request.encoder.writeData(request.context, id, BufferInternal.buffer("hello").getByteBuf(), 0, true, request.context.newPromise());
       request.context.flush();
       request.decoder.frameListener(new Http2FrameAdapter() {
         @Override
@@ -3277,7 +3290,7 @@ public class Http2ServerTest extends Http2TestBase {
       request.context.flush();
       request.encoder.writePriority(request.context, id, requestStreamPriority.getDependency(), requestStreamPriority.getWeight(), requestStreamPriority.isExclusive(), request.context.newPromise());
       request.context.flush();
-      request.encoder.writeData(request.context, id, Buffer.buffer("hello").getByteBuf(), 0, true, request.context.newPromise());
+      request.encoder.writeData(request.context, id, BufferInternal.buffer("hello").getByteBuf(), 0, true, request.context.newPromise());
       request.context.flush();
       request.decoder.frameListener(new Http2FrameAdapter() {
         @Override

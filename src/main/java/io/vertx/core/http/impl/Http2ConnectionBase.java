@@ -29,12 +29,13 @@ import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.VertxException;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.buffer.impl.BufferInternal;
 import io.vertx.core.buffer.impl.VertxByteBufAllocator;
 import io.vertx.core.http.GoAway;
 import io.vertx.core.http.HttpClosedException;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.StreamPriority;
-import io.vertx.core.impl.EventLoopContext;
+import io.vertx.core.impl.ContextInternal;
 import io.vertx.core.impl.future.PromiseInternal;
 import io.vertx.core.impl.VertxInternal;
 import io.vertx.core.impl.logging.Logger;
@@ -75,7 +76,7 @@ abstract class Http2ConnectionBase extends ConnectionBase implements Http2FrameL
   private int windowSize;
   private long maxConcurrentStreams;
 
-  public Http2ConnectionBase(EventLoopContext context, VertxHttp2ConnectionHandler handler) {
+  public Http2ConnectionBase(ContextInternal context, VertxHttp2ConnectionHandler handler) {
     super(context, handler.context());
     this.handler = handler;
     this.handlerContext = chctx;
@@ -291,7 +292,7 @@ abstract class Http2ConnectionBase extends ConnectionBase implements Http2FrameL
                              Http2Flags flags, ByteBuf payload) {
     VertxHttp2Stream stream = stream(streamId);
     if (stream != null) {
-      Buffer buff = Buffer.buffer(safeBuffer(payload));
+      Buffer buff = BufferInternal.buffer(safeBuffer(payload));
       stream.onCustomFrame(new HttpFrameImpl(frameType, flags.value(), buff));
     }
   }
@@ -309,7 +310,7 @@ abstract class Http2ConnectionBase extends ConnectionBase implements Http2FrameL
     VertxHttp2Stream stream = stream(streamId);
     if (stream != null) {
       data = safeBuffer(data);
-      Buffer buff = Buffer.buffer(data);
+      Buffer buff = BufferInternal.buffer(data);
       stream.onData(buff);
       if (endOfStream) {
         stream.onEnd();
@@ -344,7 +345,7 @@ abstract class Http2ConnectionBase extends ConnectionBase implements Http2FrameL
     if (lastStreamId < 0) {
       lastStreamId = handler.connection().remote().lastStreamCreated();
     }
-    handler.writeGoAway(errorCode, lastStreamId, debugData != null ? debugData.getByteBuf() : Unpooled.EMPTY_BUFFER);
+    handler.writeGoAway(errorCode, lastStreamId, debugData != null ? ((BufferInternal)debugData).getByteBuf() : Unpooled.EMPTY_BUFFER);
     return this;
   }
 

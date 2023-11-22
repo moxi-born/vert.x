@@ -10,23 +10,19 @@
  */
 package io.vertx.core.http.impl;
 
-import io.vertx.codegen.annotations.Fluent;
-import io.vertx.codegen.annotations.GenIgnore;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.MultiMap;
 import io.vertx.core.Promise;
 import io.vertx.core.http.*;
 import io.vertx.core.impl.VertxInternal;
-import io.vertx.core.net.SSLOptions;
+import io.vertx.core.net.ClientSSLOptions;
+import io.vertx.core.net.HostAndPort;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.impl.NetClientInternal;
 import io.vertx.core.spi.metrics.Metrics;
 
 import java.lang.ref.Cleaner;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
-import java.util.function.Function;
 
 /**
  * A lightweight proxy of Vert.x {@link HttpClient} that can be collected by the garbage collector and release
@@ -66,70 +62,12 @@ public class CleanableHttpClient implements HttpClientInternal {
   }
 
   @Override
-  public Future<HttpClientRequest> request(HttpMethod method, int port, String host, String requestURI) {
-    return delegate.request(method, port, host, requestURI);
+  public Future<Boolean> updateSSLOptions(ClientSSLOptions options, boolean force) {
+    return delegate.updateSSLOptions(options, force);
   }
 
   @Override
-  public Future<HttpClientRequest> request(HttpMethod method, String host, String requestURI) {
-    return delegate.request(method, host, requestURI);
-  }
-
-  @Override
-  public Future<HttpClientRequest> request(HttpMethod method, String requestURI) {
-    return delegate.request(method, requestURI);
-  }
-
-  @Override
-  public Future<WebSocket> webSocket(int port, String host, String requestURI) {
-    return delegate.webSocket(port, host, requestURI);
-  }
-
-  @Override
-  public Future<WebSocket> webSocket(String host, String requestURI) {
-    return delegate.webSocket(host, requestURI);
-  }
-
-  @Override
-  public Future<WebSocket> webSocket(String requestURI) {
-    return delegate.webSocket(requestURI);
-  }
-
-  @Override
-  public Future<WebSocket> webSocket(WebSocketConnectOptions options) {
-    return delegate.webSocket(options);
-  }
-
-  @Override
-  public Future<WebSocket> webSocketAbs(String url, MultiMap headers, WebsocketVersion version, List<String> subProtocols) {
-    return delegate.webSocketAbs(url, headers, version, subProtocols);
-  }
-
-  @Override
-  public Future<Void> updateSSLOptions(SSLOptions options) {
-    return delegate.updateSSLOptions(options);
-  }
-
-  @Override
-  @Fluent
-  public HttpClient connectionHandler(Handler<HttpConnection> handler) {
-    return delegate.connectionHandler(handler);
-  }
-
-  @Override
-  @Fluent
-  public HttpClient redirectHandler(Function<HttpClientResponse, Future<RequestOptions>> handler) {
-    return delegate.redirectHandler(handler);
-  }
-
-  @Override
-  @GenIgnore
-  public Function<HttpClientResponse, Future<RequestOptions>> redirectHandler() {
-    return delegate.redirectHandler();
-  }
-
-  @Override
-  public Future<Void> close(long timeout, TimeUnit timeUnit) {
+  public Future<Void> shutdown(long timeout, TimeUnit timeUnit) {
     if (timeout < 0L) {
       throw new IllegalArgumentException();
     }
@@ -177,5 +115,8 @@ public class CleanableHttpClient implements HttpClientInternal {
     delegate.close(completion);
   }
 
-
+  @Override
+  public Future<HttpClientConnection> connect(SocketAddress server, HostAndPort peer) {
+    return delegate.connect(server, peer);
+  }
 }

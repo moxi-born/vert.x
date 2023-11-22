@@ -20,6 +20,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.streams.ReadStream;
@@ -73,7 +74,7 @@ public interface HttpServerRequest extends ReadStream<Buffer> {
     }
     HttpServerResponse response = request.response();
     response.setStatusCode(status.code()).end();
-    response.close();
+    request.connection().close();
   };
 
   @Override
@@ -135,10 +136,13 @@ public interface HttpServerRequest extends ReadStream<Buffer> {
   String query();
 
   /**
-   * @return the request host. For HTTP2 it returns the {@literal :authority} pseudo header otherwise it returns the {@literal Host} header
+   * @return the request authority. For HTTP/2 the {@literal :authority} pseudo header is returned, for HTTP/1.x the
+   *         {@literal Host} header is returned or {@code null} when no such header is present. When the authority
+   *         string does not carry a port, the {@link HostAndPort#port()} returns {@code -1} to indicate the
+   *         scheme port is prevalent.
    */
   @Nullable
-  String host();
+  HostAndPort authority();
 
   /**
    * @return the total number of bytes read for the body of the request.

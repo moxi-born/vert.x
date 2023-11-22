@@ -11,11 +11,8 @@
 
 package io.vertx.core.http;
 
-import io.vertx.core.Context;
-import io.vertx.core.Future;
-import io.vertx.core.VertxOptions;
+import io.vertx.core.*;
 import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.impl.HttpClientImpl;
 import io.vertx.core.http.impl.HttpClientInternal;
 import io.vertx.core.http.impl.HttpServerRequestInternal;
 import io.vertx.core.metrics.MetricsOptions;
@@ -61,8 +58,15 @@ public abstract class HttpMetricsTestBase extends HttpTestBase {
   @Override
   protected VertxOptions getOptions() {
     VertxOptions options = super.getOptions();
-    options.setMetricsOptions(new MetricsOptions().setEnabled(true).setFactory(new FakeMetricsFactory()));
+    options.setMetricsOptions(new MetricsOptions().setEnabled(true));
     return options;
+  }
+
+  @Override
+  protected Vertx createVertx(VertxOptions options) {
+    return Vertx.builder().with(options)
+      .withMetrics(new FakeMetricsFactory())
+      .build();
   }
 
   @Test
@@ -106,7 +110,7 @@ public abstract class HttpMetricsTestBase extends HttpTestBase {
         });
       });
     });
-    startServer();
+    startServer(testAddress);
     CountDownLatch latch = new CountDownLatch(1);
     AtomicReference<HttpClientMetric> clientMetric = new AtomicReference<>();
     AtomicReference<SocketMetric> clientSocketMetric = new AtomicReference<>();
@@ -117,23 +121,20 @@ public abstract class HttpMetricsTestBase extends HttpTestBase {
     Context ctx = vertx.getOrCreateContext();
     ctx.runOnContext(v -> {
       assertEquals(Collections.emptySet(), metrics.endpoints());
-      client.request(new RequestOptions()
-        .setPort(DEFAULT_HTTP_PORT)
-        .setHost(DEFAULT_HTTP_HOST)
+      client.request(new RequestOptions(requestOptions)
         .setURI(TestUtils.randomAlphaString(16)))
         .onComplete(onSuccess(req -> {
           req
             .response().onComplete(onSuccess(resp -> {
-              clientSocketMetric.set(metrics.firstMetric(SocketAddress.inetSocketAddress(8080, "localhost")));
+              clientSocketMetric.set(metrics.firstMetric(testAddress));
               assertNotNull(clientSocketMetric.get());
-              assertEquals(Collections.singleton("localhost:8080"), metrics.endpoints());
+              assertEquals(Collections.singleton(testAddress.toString()), metrics.endpoints());
               clientMetric.set(metrics.getMetric(resp.request()));
               assertNotNull(clientMetric.get());
               assertEquals(contentLength, clientMetric.get().bytesWritten.get());
               // assertNotNull(clientMetric.get().socket);
               // assertTrue(clientMetric.get().socket.connected.get());
-              assertEquals((Integer) 1, metrics.connectionCount("localhost:8080"));
-              assertEquals((Integer) 1, metrics.connectionCount(SocketAddress.inetSocketAddress(8080, "localhost")));
+              assertEquals((Integer) 1, metrics.connectionCount(testAddress));
               resp.bodyHandler(buff -> {
                 assertEquals(contentLength, clientMetric.get().bytesRead.get());
                 assertNull(metrics.getMetric(resp.request()));
@@ -258,7 +259,7 @@ public abstract class HttpMetricsTestBase extends HttpTestBase {
     server.requestHandler(req -> {
       req.response().setChunked(true).write(Buffer.buffer("some-data"));
     });
-    startServer();
+    startServer(testAddress);
     client = vertx.createHttpClient(createBaseClientOptions().setIdleTimeout(2));
     FakeHttpClientMetrics metrics = FakeMetricsBase.getMetrics(client);
     client.request(requestOptions).onComplete(onSuccess(req -> {
@@ -293,7 +294,7 @@ public abstract class HttpMetricsTestBase extends HttpTestBase {
         testComplete();
       });
     });
-    startServer();
+    startServer(testAddress);
     client.request(new RequestOptions(requestOptions).setURI(TestUtils.randomAlphaString(16))).onComplete(onSuccess(HttpClientRequest::send));
     await();
   }
@@ -311,7 +312,7 @@ public abstract class HttpMetricsTestBase extends HttpTestBase {
       req.response().end();
       testComplete();
     });
-    startServer();
+    startServer(testAddress);
     client.request(new RequestOptions(requestOptions).setURI(TestUtils.randomAlphaString(16))).onComplete(onSuccess(HttpClientRequest::send));
     await();
   }
@@ -327,7 +328,7 @@ public abstract class HttpMetricsTestBase extends HttpTestBase {
       assertNull(metric.route.get());
       testComplete();
     });
-    startServer();
+    startServer(testAddress);
     client.request(new RequestOptions(requestOptions).setURI(TestUtils.randomAlphaString(16))).onComplete(onSuccess(HttpClientRequest::send));
     await();
   }
@@ -337,7 +338,7 @@ public abstract class HttpMetricsTestBase extends HttpTestBase {
     FakeHttpClientMetrics metrics = FakeMetricsBase.getMetrics(client);
     server.requestHandler(req -> {
     }).listen(testAddress).onComplete(onSuccess(v -> {
-      client.request(HttpMethod.GET, 8080, "localhost", "/somepath").onComplete(onSuccess(request -> {
+      client.request(requestOptions).onComplete(onSuccess(request -> {
         assertNull(metrics.getMetric(request));
         request.reset(0);
         vertx.setTimer(10, id -> {

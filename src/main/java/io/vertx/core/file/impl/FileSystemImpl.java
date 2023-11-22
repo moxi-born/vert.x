@@ -12,10 +12,7 @@
 package io.vertx.core.file.impl;
 
 import io.vertx.codegen.annotations.Nullable;
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.file.AsyncFile;
 import io.vertx.core.file.CopyOptions;
@@ -56,6 +53,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 
 /**
@@ -958,7 +956,7 @@ public class FileSystemImpl implements FileSystem {
         try {
           Path target = vertx.resolveFile(path).toPath();
           FileStore fs = Files.getFileStore(target);
-          return new FileSystemPropsImpl(fs.getTotalSpace(), fs.getUnallocatedSpace(), fs.getUsableSpace());
+          return new FileSystemPropsImpl(fs.name(), fs.getTotalSpace(), fs.getUnallocatedSpace(), fs.getUsableSpace());
         } catch (IOException e) {
           throw new FileSystemException(getFileAccessErrorMessage("analyse", path), e);
         }
@@ -966,7 +964,7 @@ public class FileSystemImpl implements FileSystem {
     };
   }
 
-  protected abstract class BlockingAction<T> implements Handler<Promise<T>> {
+  protected abstract class BlockingAction<T> implements Callable<T> {
 
     protected final ContextInternal context;
 
@@ -982,13 +980,8 @@ public class FileSystemImpl implements FileSystem {
     }
 
     @Override
-    public void handle(Promise<T> fut) {
-      try {
-        T result = perform();
-        fut.complete(result);
-      } catch (Exception e) {
-        fut.fail(e);
-      }
+    public T call() throws Exception {
+      return perform();
     }
 
     public abstract T perform();
